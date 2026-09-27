@@ -12721,6 +12721,91 @@ def plot_adf_pvalue_g_diagnostic(
     )
 
 
+def plot_spectral_fractions_cut_sample(
+    frame,
+    *,
+    plot_path="plots/hubble",
+    filename="spectral_fractions_vs_redshift_precut.pdf",
+    xlim=None,
+    show=False,
+):
+    """Plot BC, Fe II, and PSF-host fractions with enclosed-density contours."""
+    panels = (
+        ("f_bc_3000", r"$f_{\rm BC}$"),
+        ("f_fe_uv_3000", r"$f_{\rm FeII}$"),
+        ("f_host_2500_psf", r"$f_{\rm host,2500\,\AA}^{\rm PSF}$"),
+    )
+    if not {"z", *(name for name, _ in panels)}.issubset(frame.columns):
+        return None
+    z = pd.to_numeric(frame["z"], errors="coerce").to_numpy(dtype=float)
+    finite_z = z[np.isfinite(z)]
+    if finite_z.size == 0:
+        return None
+    if xlim is None:
+        z_min, z_max = float(finite_z.min()), float(finite_z.max())
+        pad = 0.02 * (z_max - z_min) if z_max > z_min else 0.1
+        xlim = (max(0.0, z_min - pad), z_max + pad)
+
+    y_min, y_max = 2e-6, 5e1
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharex=True, sharey=True)
+    for index, (ax, (column, label)) in enumerate(zip(axes, panels)):
+        values = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(z) & np.isfinite(values)
+        visible = finite & (values >= y_min)
+        below = finite & (values < y_min)
+        ax.plot(
+            z[visible], values[visible], linestyle="None", marker="o",
+            markersize=2.5, alpha=0.28, color="tab:red", rasterized=True,
+        )
+        if below.any():
+            ax.plot(
+                z[below], np.full(np.count_nonzero(below), y_min * 3),
+                linestyle="None", marker=r"$\downarrow$", markersize=5,
+                alpha=0.45, color="tab:red", rasterized=True, zorder=3,
+            )
+        ax.set_xlim(*xlim)
+        inside = finite & (values >= y_min) & (values <= y_max)
+        if np.count_nonzero(inside) >= 20:
+            x_edges = np.linspace(*xlim, 91)
+            log_edges = np.linspace(np.log10(y_min), np.log10(y_max), 91)
+            histogram, _, _ = np.histogram2d(
+                z[inside], np.log10(values[inside]), bins=(x_edges, log_edges)
+            )
+            density = gaussian_filter(histogram, sigma=2.5)
+            ranked = np.sort(density.ravel())[::-1]
+            cumulative = np.cumsum(ranked) / ranked.sum()
+            inner, outer = (
+                ranked[np.searchsorted(cumulative, probability)]
+                for probability in (0.683, 0.954)
+            )
+            if 0 < outer < inner:
+                ax.contour(
+                    0.5 * (x_edges[:-1] + x_edges[1:]),
+                    10 ** (0.5 * (log_edges[:-1] + log_edges[1:])),
+                    density.T, levels=[outer, inner], colors="black",
+                    linestyles=["--", "-"], linewidths=1.7, zorder=4,
+                )
+        ax.set_xlabel(r"$z$")
+        ax.set_ylabel("Component fraction" if index == 0 else "")
+        ax.set_yscale("log")
+        ax.set_ylim(y_min, y_max)
+        point_handle = Line2D(
+            [], [], marker="o", linestyle="None", markersize=5,
+            markerfacecolor="tab:red", markeredgecolor="tab:red",
+            alpha=1, label=label,
+        )
+        ax.legend(
+            handles=[point_handle], loc="upper right", fontsize=12,
+            frameon=True, facecolor="white", framealpha=0.75,
+            edgecolor="none",
+        )
+    fig.tight_layout()
+    return _save_figure(
+        fig, os.path.join(plot_path or "plots/hubble", "diagnostics", filename),
+        dpi=200, show=show,
+    )
+
+
 def plot_spectral_fraction_vs_redshift(
     df_agn,
     plot_path="plots/hubble",

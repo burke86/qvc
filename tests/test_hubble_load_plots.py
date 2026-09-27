@@ -140,6 +140,7 @@ def _patch_load_agn_plotters(monkeypatch):
         "plot_cut_diagnostics",
         "plot_m2500_vs_z_colorpanels",
         "plot_spectral_fraction_vs_redshift",
+        "plot_spectral_fractions_cut_sample",
         "plot_sf_ref_band_vs_model_g",
         "plot_sf_vs_uv_variability",
         "plot_sigma_bc_vs_frac_bc",
@@ -194,6 +195,35 @@ def test_load_agn_data_makes_default_combined_tier1_diagnostic(tmp_path, monkeyp
     assert kwargs["plot_path"] == str(tmp_path / "plots")
 
 
+def test_load_agn_data_makes_spectral_fraction_pre_and_postcut_plots(tmp_path, monkeypatch):
+    source_path = tmp_path / "agn.h5"
+    source_path.touch()
+    frame = _minimal_agn_frame(n=25)
+    monkeypatch.setattr(
+        hubble_utils, "read_quasars_from_hdf5_flat",
+        lambda *_args, **_kwargs: frame.copy(),
+    )
+    monkeypatch.setattr(hubble_utils, "populate_xray", lambda value: value)
+    _patch_load_agn_plotters(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        hubble_plotting, "plot_spectral_fractions_cut_sample",
+        lambda data, **kwargs: calls.append((data.copy(), kwargs)),
+    )
+
+    hubble_utils.load_agn_data(
+        source_path, magnitude_convention="dereddened", cut_tier="none",
+        plot_path=str(tmp_path / "plots"),
+    )
+
+    assert [call[1]["filename"] for call in calls] == [
+        "spectral_fractions_vs_redshift_precut.pdf",
+        "spectral_fractions_vs_redshift_postcut.pdf",
+    ]
+    assert [len(call[0]) for call in calls] == [25, 25]
+    assert calls[0][1]["xlim"] == calls[1][1]["xlim"]
+
+
 def test_load_agn_data_makes_pre_and_postcut_joint_sed_and_blr_plots(tmp_path, monkeypatch):
     source_path = tmp_path / "agn.h5"
     source_path.touch()
@@ -241,6 +271,7 @@ def test_load_agn_data_makes_pre_and_postcut_joint_sed_and_blr_plots(tmp_path, m
         "plot_cut_diagnostics",
         "plot_m2500_vs_z_colorpanels",
         "plot_spectral_fraction_vs_redshift",
+        "plot_spectral_fractions_cut_sample",
         "plot_sf_ref_band_vs_model_g",
         "plot_sf_vs_uv_variability",
         "plot_sigma_bc_vs_frac_bc",

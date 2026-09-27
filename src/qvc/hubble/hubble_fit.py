@@ -141,6 +141,7 @@ from qvc.hubble.hubble_plotting import (
     plot_redshift_wiggle_diagnostics,
     plot_residuals_vs_alphaOX,
     plot_sigma_uv_mpred_correction,
+    plot_spectral_fractions_cut_sample,
 )
 from qvc.hubble.tex_utils import make_agn_csv_table, make_agn_latex_table
 from qvc.hubble.hubble_model import (
@@ -6859,6 +6860,24 @@ if __name__ == "__main__":
         df_agn_completeness_parent = df_agn.copy()
     else:
         df_agn, df_agn_all, df_agn_completeness_parent = loaded_agn
+    if args.minimal_plots:
+        # This requested run diagnostic is retained even when the optional
+        # diagnostic suite is disabled in load_agn_data.
+        spectral_z = pd.to_numeric(df_agn_all["z"], errors="coerce").to_numpy(dtype=float)
+        spectral_z = spectral_z[np.isfinite(spectral_z)]
+        spectral_xlim = None
+        if spectral_z.size:
+            z_min, z_max = float(spectral_z.min()), float(spectral_z.max())
+            pad = 0.02 * (z_max - z_min) if z_max > z_min else 0.1
+            spectral_xlim = (max(0.0, z_min - pad), z_max + pad)
+        plot_spectral_fractions_cut_sample(
+            df_agn_all, plot_path=agn_plot_path,
+            filename="spectral_fractions_vs_redshift_precut.pdf", xlim=spectral_xlim,
+        )
+        plot_spectral_fractions_cut_sample(
+            df_agn, plot_path=agn_plot_path,
+            filename="spectral_fractions_vs_redshift_postcut.pdf", xlim=spectral_xlim,
+        )
     bright_subsample_cut = None
     bright_subsample_plot_data = None
     if args.bright_subsample_completeness_min is not None:

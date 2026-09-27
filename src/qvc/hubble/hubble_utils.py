@@ -1400,6 +1400,7 @@ def load_agn_data(file_path, populate_sdss=False, cut_tier="2",
         plot_sigma_uv_vs_variability_chi_sq_red_g,
         plot_sigma_uv_vs_tau_uv_rf,
         plot_sigma_uv_host_correction,
+        plot_spectral_fractions_cut_sample,
         plot_suberlak_style_sigma_tau_fits,
         plot_tau_sigma_vs_wu_catalog,
         plot_tau_sigma_vs_redshift,
@@ -1446,6 +1447,7 @@ def load_agn_data(file_path, populate_sdss=False, cut_tier="2",
         plot_sigma_uv_vs_variability_chi_sq_red_g = _skip_diagnostic_plot
         plot_sigma_uv_vs_tau_uv_rf = _skip_diagnostic_plot
         plot_sigma_uv_host_correction = _skip_diagnostic_plot
+        plot_spectral_fractions_cut_sample = _skip_diagnostic_plot
         plot_suberlak_style_sigma_tau_fits = _skip_diagnostic_plot
         plot_tau_sigma_vs_wu_catalog = _skip_diagnostic_plot
         plot_tau_sigma_vs_redshift = _skip_diagnostic_plot
@@ -2536,6 +2538,18 @@ def load_agn_data(file_path, populate_sdss=False, cut_tier="2",
     # Preserve the historical Tier-0 population for host-population modeling.
     # The map-count parent is captured below after the requested quality tier.
     df_all = df.copy()
+    spectral_z = pd.to_numeric(df_all["z"], errors="coerce").to_numpy(dtype=float)
+    spectral_z = spectral_z[np.isfinite(spectral_z)]
+    spectral_xlim = None
+    if spectral_z.size:
+        z_min, z_max = float(spectral_z.min()), float(spectral_z.max())
+        pad = 0.02 * (z_max - z_min) if z_max > z_min else 0.1
+        spectral_xlim = (max(0.0, z_min - pad), z_max + pad)
+    plot_spectral_fractions_cut_sample(
+        df_all, plot_path=plot_path,
+        filename="spectral_fractions_vs_redshift_precut.pdf",
+        xlim=spectral_xlim,
+    )
 
     # Tier 1: mandatory fit quality whenever the selected level is >= 1.
     if apply_tier1:
@@ -3087,6 +3101,11 @@ def load_agn_data(file_path, populate_sdss=False, cut_tier="2",
             tau_resolution_mode="filter",
             fixed_only=True,
         )
+    plot_spectral_fractions_cut_sample(
+        df, plot_path=plot_path,
+        filename="spectral_fractions_vs_redshift_postcut.pdf",
+        xlim=spectral_xlim,
+    )
     plot_cut_diagnostics(df_all.copy(), df.copy(), bins=30, cut_info="all cuts", save_path=cuts_plot_dir)
     colorpanel_cols = [col for col in ("f_host_2500", "f_host_center", "f_bc_3000", "wrms") if col in df_all.columns]
     if len(colorpanel_cols) > 0 and "z" in df_all.columns and "apparent_mag_2500" in df_all.columns:
