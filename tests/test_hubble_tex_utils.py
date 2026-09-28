@@ -85,8 +85,12 @@ def test_make_agn_latex_table_writes_expected_output(tmp_path):
     assert r"$m_{2500}$" in latex
     assert r"$\alpha_\lambda$" in latex
     assert r"$f_{\rm AGN,5100}$" in latex
-    assert r"$E(B-V)_{\rm AGN}$" in latex
-    assert r"$E(B-V)_{\rm Gal}$" in latex
+    assert r"$f_{\rm BC,3000}$" in latex
+    assert r"$f_{\rm FeII,3000}$" in latex
+    assert "E(B-V)" not in latex
+    assert latex.index(r"$f_{\rm AGN,5100}$") < latex.index(r"$f_{\rm BC,3000}$")
+    assert latex.index(r"$f_{\rm BC,3000}$") < latex.index(r"$f_{\rm FeII,3000}$")
+    assert latex.index(r"$f_{\rm FeII,3000}$") < latex.index(r"$\mu$")
     assert r"$\log\tau_{\mathrm{UV,RF}}$" in latex
     assert r"$\log\sigma_{\mathrm{UV}}$" in latex
     assert r"\textbf{J123456.78+123456.7}" in latex
@@ -95,8 +99,8 @@ def test_make_agn_latex_table_writes_expected_output(tmp_path):
     assert "$20.15 \\pm 0.07$" in latex
     assert "$-1.37 \\pm 0.08$" in latex
     assert "$0.82 \\pm 0.03$" in latex
-    assert "$0.041 \\pm 0.006$" in latex
-    assert "$0.019 \\pm 0.004$" in latex
+    assert "$0.140 \\pm 0.020$" in latex
+    assert "$0.310 \\pm 0.040$" in latex
     assert "$44.21 \\pm 0.13$" in latex
     assert "$2.34 \\pm 0.11$" in latex
     assert "$-0.88 \\pm 0.09$" in latex
@@ -147,10 +151,10 @@ def test_make_agn_csv_table_writes_expected_output(tmp_path):
         "pl_slope_err",
         "fracAGN_5100_fit",
         "fracAGN_5100_fit_err",
-        "ebv_agn",
-        "ebv_agn_err",
-        "ebv_gal",
-        "ebv_gal_err",
+        "f_bc_3000",
+        "f_bc_3000_err",
+        "f_fe_uv_3000",
+        "f_fe_uv_3000_err",
         "mu",
         "mu_err",
         "log_tau_UV_RF",
@@ -162,6 +166,9 @@ def test_make_agn_csv_table_writes_expected_output(tmp_path):
     ]
     assert "is_fit_selection" not in plain.columns
     assert "PL_slope" not in plain.columns
+    assert not {"ebv_agn", "ebv_agn_err", "ebv_gal", "ebv_gal_err"} & set(plain)
+    np.testing.assert_allclose(plain["f_bc_3000"], df["f_bc_3000"])
+    np.testing.assert_allclose(plain["f_fe_uv_3000_err"], df["f_fe_uv_3000_err"])
     assert list(plain["z"]) == sorted(df["z"].tolist())
     np.testing.assert_allclose(plain["m_2500"], loaded["apparent_mag_2500_corr"])
     np.testing.assert_allclose(plain["m_2500_err"], loaded["apparent_mag_2500_corr_err"])
@@ -170,8 +177,10 @@ def test_make_agn_csv_table_writes_expected_output(tmp_path):
     np.testing.assert_allclose(plain["pl_slope"], loaded["pl_slope"])
     np.testing.assert_allclose(plain["pl_slope_err"], loaded["pl_slope_err"])
     np.testing.assert_allclose(plain["fracAGN_5100_fit"], loaded["fracAGN_5100_fit"])
-    np.testing.assert_allclose(plain["ebv_agn"], loaded["ebv_agn"])
-    np.testing.assert_allclose(plain["ebv_gal"], loaded["ebv_gal"])
+    np.testing.assert_allclose(plain["f_bc_3000"], loaded["f_bc_3000"])
+    np.testing.assert_allclose(plain["f_bc_3000_err"], loaded["f_bc_3000_err"])
+    np.testing.assert_allclose(plain["f_fe_uv_3000"], loaded["f_fe_uv_3000"])
+    np.testing.assert_allclose(plain["f_fe_uv_3000_err"], loaded["f_fe_uv_3000_err"])
     np.testing.assert_allclose(plain["mu_err"], loaded["mu_err"])
     np.testing.assert_allclose(plain["log_tau_UV_RF_err"], loaded["log_tau_uv_rf_std_psd"])
     np.testing.assert_allclose(plain["log_sigma_UV_err"], loaded["log_sigma_uv_std_psd"])
@@ -351,10 +360,10 @@ def test_make_agn_latex_table_passes_alpha_lambda_to_4d_dm_interp(tmp_path):
         "pl_slope_err",
         "fracAGN_5100_fit",
         "fracAGN_5100_fit_err",
-        "ebv_agn",
-        "ebv_agn_err",
-        "ebv_gal",
-        "ebv_gal_err",
+        "f_bc_3000",
+        "f_bc_3000_err",
+        "f_fe_uv_3000",
+        "f_fe_uv_3000_err",
         "log_tau_uv_rf",
         "log_tau_uv_rf_std_psd",
         "log_sigma_uv",
