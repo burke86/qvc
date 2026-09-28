@@ -139,3 +139,64 @@ def test_tau_uses_continuum_median_parameters_instead_of_stored_total_tau():
             )
             expected.append(np.log10(band_tau / reference))
     np.testing.assert_allclose(data["y_res"], expected, rtol=2e-5, atol=2e-6)
+
+
+def test_common_bootstrap_matches_explicit_paired_row_resampling():
+    from qvc.hubble.sigma_tau_lambda_fit import slope_bootstrap_band
+    df, _, _ = frame()
+    result = fit_sigma_tau_lambda_broken_pl(df, fit_mode='common_bootstrap',
+                                           bootstrap_replicates=40, include_plot_payload=True)
+    again = fit_sigma_tau_lambda_broken_pl(df, fit_mode='common_bootstrap', bootstrap_replicates=40)
+    for target in ('sigma', 'tau'):
+        data, fit = result[f'{target}_data'], result[f'fit_{target}']
+        x = np.log10(data['lam']/2500.)
+        design = np.column_stack([np.minimum(x, 0), np.maximum(x, 0)])
+        np.testing.assert_allclose([fit['d1'], fit['d2']], np.linalg.lstsq(design, data['y_res'], rcond=None)[0])
+        rng = np.random.default_rng(2500)
+        draws = []
+        repeats = False
+        for _ in range(40):
+            rows = rng.integers(len(df), size=len(df))
+            repeats |= len(set(rows)) < len(rows)
+            # Concatenate all bands for each occurrence, including repeated IDs.
+            indices = np.concatenate([np.flatnonzero(data['group'] == row) for row in rows])
+            draws.append(np.linalg.lstsq(design[indices], data['y_res'][indices], rcond=None)[0])
+        assert repeats
+        np.testing.assert_allclose(fit['bootstrap_slopes'], draws)
+        np.testing.assert_array_equal(fit['bootstrap_slopes'], again[f'fit_{target}']['bootstrap_slopes'])
+        grid = np.array([1000.,2500.,5000.])
+        curves = log_broken_pl(grid,2500,np.asarray(draws)[:,0,None],np.asarray(draws)[:,1,None])
+        np.testing.assert_allclose(slope_bootstrap_band(fit,grid,lam_s=2500),np.percentile(curves,[16,84],axis=0))
+        assert np.all(curves[:,1] == 0)
+        assert 'mean_slope_percentiles' not in fit
+
+
+def test_common_plot_matches_bootstrap_results(monkeypatch):
+    import matplotlib.pyplot as plt
+    from qvc.hubble import hubble_plotting
+    from qvc.hubble.sigma_tau_lambda_fit import slope_bootstrap_band
+    df, _, _ = frame()
+    result = fit_sigma_tau_lambda_broken_pl(df, fit_mode='common_bootstrap', include_plot_payload=True)
+    fit_calls = []
+    def capture_fit(*args, **kwargs):
+        fit_calls.append(kwargs)
+        return result
+    monkeypatch.setattr(hubble_plotting, 'fit_sigma_tau_lambda_broken_pl', capture_fit)
+    monkeypatch.setattr(hubble_plotting, '_save_figure', lambda fig, *a, **k: fig)
+    fig = hubble_plotting.plot_sigma_tau_vs_lambda_broken_pl_fit(df)
+    try:
+        assert fit_calls[0]['fit_mode'] == 'common_bootstrap'
+        for ax, target in zip(fig.axes, ('sigma','tau')):
+            fit = result[f'fit_{target}']
+            x,y = ax.lines[0].get_data()
+            np.testing.assert_allclose(y,log_broken_pl(10**x,2500,fit['d1'],fit['d2']))
+            low,high = slope_bootstrap_band(fit,10**x,lam_s=2500)
+            assert np.all(y >= low-1e-14) and np.all(y <= high+1e-14)
+            vertices = ax.collections[-1].get_paths()[0].vertices
+            for bound in (low,high):
+                for xx,yy in zip(x,bound):
+                    assert np.any(np.isclose(vertices[:,0],xx,rtol=0,atol=1e-12)&np.isclose(vertices[:,1],yy,rtol=0,atol=1e-12))
+        legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert 'Population fit' in legend and '68% whole-quasar bootstrap' not in legend
+    finally:
+        plt.close(fig)

@@ -316,6 +316,7 @@ def test_load_agn_data_makes_pre_and_postcut_joint_sed_and_blr_plots(tmp_path, m
     assert "blr_precut.pdf" in captured_by_filename
     assert "blr_postcut.pdf" in captured_by_filename
     assert "sigma_tau_vs_lambda_broken_pl_fit_postcut.pdf" in captured_by_filename
+    assert captured_by_filename["sigma_tau_vs_lambda_broken_pl_fit_postcut.pdf"]["fit_mode"] == "common_bootstrap"
     precut_eta = captured_by_filename[
         "eta_sigma_vs_redshift_colored_by_kl_precut.pdf"
     ]

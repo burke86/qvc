@@ -235,6 +235,42 @@ def _fit_slopes(data, *, lam_s, positive, bootstrap_replicates, bootstrap_seed):
     }
 
 
+def _fit_common_slopes(data, *, lam_s, bootstrap_replicates, bootstrap_seed):
+    """Pool all band points; bootstrap catalog rows with their multiplicities."""
+    x = np.log10(data["lam"] / float(lam_s))
+    design = np.column_stack([np.minimum(x, 0.0), np.maximum(x, 0.0)])
+    num = np.zeros((data["n_objects"], 2))
+    den = np.zeros_like(num)
+    np.add.at(num, data["group"], design * data["y_res"][:, None])
+    np.add.at(den, data["group"], design**2)
+    if np.any(den.sum(axis=0) <= 1e-12):
+        raise ValueError("broken power-law fit requires points on both sides of lam_s")
+    theta = num.sum(axis=0) / den.sum(axis=0)
+    rng = np.random.default_rng(bootstrap_seed)
+    draws = []
+    for _ in range(bootstrap_replicates):
+        rows = rng.integers(data["n_objects"], size=data["n_objects"])
+        denominator = den[rows].sum(axis=0)
+        if np.any(denominator <= 1e-12):
+            continue
+        draws.append(num[rows].sum(axis=0) / denominator)
+    draws = np.asarray(draws)
+    if len(draws) < 2 or not np.all(np.isfinite(draws)):
+        raise ValueError("insufficient finite whole-object bootstrap fits")
+    cov = np.cov(draws, rowvar=False, ddof=1)
+    err = np.sqrt(np.diag(cov))
+    return {
+        "d1": float(theta[0]), "d2": float(theta[1]),
+        "d1_err": float(err[0]), "d2_err": float(err[1]),
+        "intercept": 0.0, "cov": cov,
+        "bootstrap_slopes": draws,
+        "slope_percentiles": np.percentile(draws, [16, 84], axis=0).T,
+        "bootstrap_replicates_valid": len(draws),
+        "objects_per_slope": (den > 1e-12).sum(axis=0),
+        "rmse": float(np.sqrt(np.mean((data["y_res"] - design @ theta)**2))),
+    }
+
+
 def fit_sigma_tau_lambda_broken_pl(
     df,
     *,
@@ -245,15 +281,22 @@ def fit_sigma_tau_lambda_broken_pl(
     bootstrap_replicates=1000,
     bootstrap_seed=2500,
     disk_order=3,
+    fit_mode="population",
 ):
-    """Fit population mean slopes with whole-quasar bootstrap uncertainty.
+    """Fit population slopes or a common pooled relation with bootstrap errors.
 
     Tau slopes follow a positive lognormal; sigma slopes follow a normal.
     Mean uncertainties come from bootstrap refits; the plotted population band
     uses empirical per-object slope percentiles. When driver and disk fields are
     available, tau is reconstructed as a continuum-only median-parameter
     approximation. Measurement errors are not used.
+
+    ``common_bootstrap`` instead fits all band points in one unweighted relation
+    per target. Its slope percentiles describe sampling uncertainty in that
+    relation, not individual-object population spread.
     """
+    if fit_mode not in {"population", "common_bootstrap"}:
+        raise ValueError("fit_mode must be population or common_bootstrap")
     if (
         not isinstance(bootstrap_replicates, (int, np.integer))
         or bootstrap_replicates < 2
@@ -277,20 +320,21 @@ def fit_sigma_tau_lambda_broken_pl(
         n = 0 if data is None else len(data["lam"])
         if n < min_points:
             raise ValueError(f"insufficient finite points ({target}={n})")
-        fit = _fit_slopes(
-            data,
-            lam_s=lam_s,
-            positive=(target == "tau"),
-            bootstrap_replicates=bootstrap_replicates,
-            bootstrap_seed=bootstrap_seed,
-        )
+        kwargs = dict(lam_s=lam_s, bootstrap_replicates=bootstrap_replicates,
+                      bootstrap_seed=bootstrap_seed)
+        if fit_mode == "common_bootstrap":
+            fit = _fit_common_slopes(data, **kwargs)
+            percentiles = fit["slope_percentiles"]
+        else:
+            fit = _fit_slopes(data, positive=(target == "tau"), **kwargs)
+            percentiles = fit["mean_slope_percentiles"]
         result[f"fit_{target}"] = fit
         for side, key, i in (("blue", "d1", 0), ("red", "d2", 1)):
             prefix = f"eta_{target}_{side}"
             result[prefix] = fit[key]
             result[prefix + "_err"] = fit[key + "_err"]
-            result[prefix + "_p16"] = float(fit["mean_slope_percentiles"][i, 0])
-            result[prefix + "_p84"] = float(fit["mean_slope_percentiles"][i, 1])
+            result[prefix + "_p16"] = float(percentiles[i, 0])
+            result[prefix + "_p84"] = float(percentiles[i, 1])
         if include_plot_payload:
             result[f"{target}_data"] = data
     return result
@@ -303,3 +347,10 @@ def slope_population_band(fit, lam_grid, *, lam_s):
     edge2 = log_broken_pl(lam_grid, lam_s, q[0, 1], q[1, 1])
     # Negative log wavelength reverses the ordering of the slope quantiles.
     return np.minimum(edge1, edge2), np.maximum(edge1, edge2)
+
+
+def slope_bootstrap_band(fit, lam_grid, *, lam_s):
+    """Pointwise 16th--84th percentiles of common bootstrap fitted curves."""
+    draws = fit["bootstrap_slopes"]
+    curves = log_broken_pl(lam_grid, lam_s, draws[:, 0, None], draws[:, 1, None])
+    return np.percentile(curves, [16, 84], axis=0)

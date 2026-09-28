@@ -69,6 +69,7 @@ from qvc.hubble.sigma_tau_lambda_fit import (
     fit_sigma_tau_lambda_broken_pl,
     log_broken_pl,
     slope_population_band,
+    slope_bootstrap_band,
 )
 from qvc.hubble.hubble_utils import (
     convert_M2500_to_logL2500,
@@ -2123,8 +2124,13 @@ def plot_sigma_tau_vs_lambda_broken_pl_fit(
     lam_s=2500.0,
     min_points=3,
     disk_order=3,
+    fit_mode="common_bootstrap",
+    bootstrap_replicates=1000,
+    bootstrap_seed=2500,
 ):
-    """Plot population mean relations and empirical 16th-84th slope bands."""
+    """Plot population medians or common fits with whole-quasar bootstrap bands."""
+    if fit_mode not in {"population", "common_bootstrap"}:
+        raise ValueError("fit_mode must be population or common_bootstrap")
     try:
         fit_result = fit_sigma_tau_lambda_broken_pl(
             df,
@@ -2133,6 +2139,9 @@ def plot_sigma_tau_vs_lambda_broken_pl_fit(
             min_points=min_points,
             disk_order=disk_order,
             include_plot_payload=True,
+            fit_mode=fit_mode,
+            bootstrap_replicates=bootstrap_replicates,
+            bootstrap_seed=bootstrap_seed,
         )
     except (KeyError, ValueError) as exc:
         print(
@@ -2151,20 +2160,17 @@ def plot_sigma_tau_vs_lambda_broken_pl_fit(
     xgrid = np.linspace(2.81, 3.89, 600)
     xgrid = np.sort(np.unique(np.append(xgrid, np.log10(float(lam_s)))))
     lam_grid = 10.0**xgrid
-    yfit_sigma = fit_sigma["intercept"] + log_broken_pl(
-        lam_grid,
-        lam_s,
-        fit_sigma["d1"],
-        fit_sigma["d2"],
-    )
-    yfit_tau = fit_tau["intercept"] + log_broken_pl(
-        lam_grid,
-        lam_s,
-        fit_tau["d1"],
-        fit_tau["d2"],
-    )
-    band_sigma = slope_population_band(fit_sigma, lam_grid, lam_s=lam_s)
-    band_tau = slope_population_band(fit_tau, lam_grid, lam_s=lam_s)
+    def curve_and_band(fit):
+        if fit_mode == "common_bootstrap":
+            slopes = [fit["d1"], fit["d2"]]
+            band = slope_bootstrap_band(fit, lam_grid, lam_s=lam_s)
+        else:
+            slopes = fit["empirical_population_quantiles"][:, 1]
+            band = slope_population_band(fit, lam_grid, lam_s=lam_s)
+        return fit["intercept"] + log_broken_pl(lam_grid, lam_s, *slopes), band
+
+    yfit_sigma, band_sigma = curve_and_band(fit_sigma)
+    yfit_tau, band_tau = curve_and_band(fit_tau)
 
     fig, (ax_sigma, ax_tau) = plt.subplots(
         2,
@@ -2274,7 +2280,8 @@ def plot_sigma_tau_vs_lambda_broken_pl_fit(
         )
         for band in dict.fromkeys(plotted_bands)
     ]
-    model_handle = [Line2D([0], [0], color="m", lw=1.6, label="Population fit")]
+    model_handle = [Line2D([0], [0], color="m", lw=1.6,
+                           label="Population fit" if fit_mode == "common_bootstrap" else "Population median")]
     if band_handles:
         ax_sigma.legend(handles=band_handles + model_handle, loc="upper right", frameon=False, ncol=2, fontsize=9)
 

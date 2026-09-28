@@ -2933,6 +2933,7 @@ def load_agn_data(file_path, populate_sdss=False, cut_tier="2",
             plot_path=plot_path,
             show=False,
             filename="sigma_tau_vs_lambda_broken_pl_fit_postcut.pdf",
+            fit_mode="common_bootstrap",
         )
     if {
         "log_sigma_uv_err",
