@@ -5095,7 +5095,7 @@ def run_iterated_mag_flux_linearized_inference(
     drop_band_lyman_alpha=False,
     tau_fast_truncated=False,
     n_blr_terms=1,
-    model_variant="mag_flux_linearized_erlang",
+    model_variant=SHARED_LATENT_BLR_VARIANT,
     erlang_order=DEFAULT_ERLANG_ORDER,
     disk_order=DEFAULT_DISK_ORDER,
     use_fast_solver=False,
@@ -5614,9 +5614,10 @@ def main():
     parser.add_argument(
         "--model_variant",
         choices=FLUX_LINEARIZED_MODEL_VARIANTS,
-        default="mag_flux_linearized_erlang",
+        default=SHARED_LATENT_BLR_VARIANT,
         help=(
-            "Causal-Erlang light-curve model. 'shared_latent_blr' uses one "
+            "Causal-Erlang light-curve model (default: shared_latent_blr). "
+            "'shared_latent_blr' uses one "
             "wavelength-independent DHO driver with wavelength-scaled disk "
             "convolutions and bandwise unit-RMS delayed responses; its "
             "log_tau_uv_rf is the continuum-only 2500 A effective timescale."
