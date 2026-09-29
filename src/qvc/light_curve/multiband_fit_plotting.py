@@ -2859,7 +2859,7 @@ def save_combined_plot(samples, model, X, y, yerr, band_idx, mags_means, survey_
         tau_samples_for_psd = np.asarray(samples['log_tau_uv'])
         n_total = int(len(tau_samples_for_psd))
         psd_samples = []
-        n_samp = np.min([50, n_total])
+        n_samp = min(500, n_total)
         for i in range(n_samp):
             sample_params = _posterior_sample_params_at_index(samples, i, n_total)
             psd_i = model.psd(
