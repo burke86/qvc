@@ -94,6 +94,8 @@ def test_sweep_runs_every_model_with_only_the_intended_environment_changes(
     ):
         model_prefix = f"comparison_{run.key}"
         expected_environment = baseline | {
+            "QVC_HUBBLE_COSMO_MODELS": "Flatw0waCDM",
+            "QVC_HUBBLE_RUN_MODE": "single",
             "QVC_HUBBLE_COMPLETENESS_LF_MODEL": run.lf_model,
             "QVC_HUBBLE_MINIMAL_PLOTS": "true",
             "QVC_HUBBLE_COMPLETENESS_MAGNITUDE": run.completeness_magnitude,
@@ -552,3 +554,46 @@ def test_main_generates_diagnostics_after_comparison_pdf(monkeypatch, tmp_path):
     assert rendered == [
         (expected_pdf.resolve(), expected_pdf.with_suffix(".png"), "pdftoppm")
     ]
+
+
+def test_default_sweep_speed_and_model_selection(monkeypatch):
+    monkeypatch.delenv('QVC_HUBBLE_SPEED', raising=False)
+    monkeypatch.delenv('QVC_HUBBLE_LF_COMPARISON_PREFIX', raising=False)
+    assert comparison.parse_args([]).prefix == 'hubble_lf_comparison_standard'
+    for run in comparison.LF_RUNS:
+        env = comparison.build_child_environment(
+            {'QVC_HUBBLE_COSMO_MODELS': 'FlatLambdaCDM FlatwCDM',
+             'QVC_HUBBLE_RUN_MODE': 'full'}, run, 'test-prefix',
+        )
+        assert env['QVC_HUBBLE_SPEED'] == 'standard'
+        assert env['QVC_HUBBLE_COSMO_MODELS'] == 'Flatw0waCDM'
+        assert env['QVC_HUBBLE_RUN_MODE'] == 'single'
+
+
+@pytest.mark.skipif(shutil.which('xonsh') is None, reason='xonsh is required')
+def test_lf_child_launcher_matches_paper_cuts_without_running_fits(tmp_path):
+    from test_run_hubble_paper_launcher import launch, options
+
+    env = comparison.build_child_environment({}, comparison.LF_RUNS[0], 'lf-test')
+    child_result, children = launch(tmp_path / 'child', 'run_hubble.xonsh', env)
+    paper_result, paper_calls = launch(tmp_path / 'paper', 'run_hubble_paper.xonsh',
+                                       {'QVC_HUBBLE_SKIP_PAPER_ASSET_COPY': '1'})
+    assert child_result.returncode == 0, child_result.stderr
+    assert paper_result.returncode == 0, paper_result.stderr
+    assert len(children) == 1
+    child = children[0]
+    fiducial = next(call for call in paper_calls
+                    if options(call)['--result_prefix'] == ['fiducial'])
+    cut_env = lambda call: {k: v for k, v in call['env'].items() if k.startswith('QVC_CUT_')}
+    assert cut_env(child) == cut_env(fiducial)
+    actual, expected = options(child), options(fiducial)
+    for key in ('--bright-subsample-completeness-min', '--bright-subsample-margin',
+                '--cut-tier', '--z_range', '--magnitude-convention',
+                '--completeness_magnitude', '--completeness-magnitude-support-mode',
+                '--completeness-mag-bin-width', '--completeness-z-bin-width',
+                '--completeness-smooth-sigma-mag', '--completeness-smooth-sigma-z',
+                '--disable_sigma_clip_pass', '--prior-profile', '--early-de-guard'):
+        assert actual[key] == expected[key], key
+    assert actual['--speed'] == ['standard']
+    assert actual['--run'] == ['single']
+    assert actual['--cosmo_models'] == ['Flatw0waCDM']

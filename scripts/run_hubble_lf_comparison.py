@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Run the Hubble workflow for every supported luminosity function.
 
-Each child run delegates to ``run_hubble.xonsh`` with the minimal plot set.
+Each child run delegates to ``run_hubble.xonsh`` with the paper selection cuts,
+minimal plots, and a single Flatw0waCDM run. Sampling defaults to standard;
+QVC_HUBBLE_SPEED remains available as an explicit override.
 The resulting debiased Hubble diagrams are assembled into a labeled, single-
 tightly cropped, single-page PDF without rasterizing the source figures, with
 a matching PNG rendering written alongside it. Paired residual and selection-
@@ -38,7 +40,7 @@ from qvc.hubble.lf_comparison_diagnostics import (
 
 
 RUN_HUBBLE = REPO_ROOT / "run_hubble.xonsh"
-DEFAULT_SPEED = "quick"
+DEFAULT_SPEED = "standard"
 COMPARISON_FILENAME = "luminosity_function_hubble_comparison.pdf"
 COMPARISON_PNG_FILENAME = "luminosity_function_hubble_comparison.png"
 COMPARISON_PNG_DPI = 200
@@ -113,8 +115,11 @@ def build_child_environment(
 ) -> dict[str, str]:
     """Return a child environment differing only in sweep-specific settings."""
     environment = dict(base_environment)
+    environment.setdefault("QVC_HUBBLE_SPEED", DEFAULT_SPEED)
     environment.update(
         {
+            "QVC_HUBBLE_COSMO_MODELS": "Flatw0waCDM",
+            "QVC_HUBBLE_RUN_MODE": "single",
             "QVC_HUBBLE_COMPLETENESS_LF_MODEL": run.lf_model,
             "QVC_HUBBLE_MINIMAL_PLOTS": "true",
             "QVC_HUBBLE_COMPLETENESS_MAGNITUDE": run.completeness_magnitude,

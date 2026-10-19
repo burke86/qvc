@@ -597,7 +597,7 @@ def _selection_correction_and_residual_figure(
             interval_kind="paired_distribution",
         )
     axes[0].set_ylabel(r"Selection correction, $d m_i$ (mag)")
-    axes[0].set_ylim(top=0.8)
+    axes[0].set_ylim(top=1.5)
     axes[0].legend(ncol=2, frameon=False, loc="upper center")
     axes[1].set_ylabel(
         r"Selection-correction difference, $\Delta d m_i$" "\n"
@@ -612,17 +612,11 @@ def _selection_correction_and_residual_figure(
         r"Final $\Delta$ Hubble residual" "\n"
         r"(w.r.t. Wang et al. (2026)) (mag)"
     )
+    for axis in axes[1:]:
+        axis.set_ylim(-0.5, 0.5)
     for axis in axes:
         axis.set_xlim(Z_EDGES[0], Z_EDGES[-1])
         axis.set_xlabel("Redshift")
-        axis.text(
-            0.02,
-            0.04,
-            f"N = {len(ids):,}",
-            transform=axis.transAxes,
-            ha="left",
-            va="bottom",
-        )
     return _save_figure(fig, output_directory, DIAGNOSTIC_FIGURE_STEM)
 
 
