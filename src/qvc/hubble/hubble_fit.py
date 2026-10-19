@@ -288,6 +288,8 @@ def _compute_alpha_ox_from_posterior_median(
     cosmo_model,
     z_pivot,
 ):
+    if df_agn.attrs.get("csc_catalog_available") is False:
+        return df_agn.copy()
     median_params = dict(zip(model_labels, np.median(flat_samples, axis=0)))
     cosmology = _cosmo_from_params(cosmo_model, median_params, z_pivot)
     print(

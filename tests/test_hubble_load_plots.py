@@ -1207,3 +1207,25 @@ def test_coverage_sn_information_selection_and_provenance(tmp_path, monkeypatch,
         frame.drop(columns=['number_points_g', 'number_points_r', 'number_points_u'] if column == 'light_curve_n_points' else [column], inplace=True)
         with pytest.raises(ValueError, match=f"Tier 2 cut requires missing column '{column}'"):
             hubble_utils.load_agn_data(source, magnitude_convention='dereddened', cut_tier=tier, plot_diagnostics=False, plot_path=str(tmp_path))
+
+
+def test_load_agn_data_missing_csc_preserves_selected_sample(tmp_path, monkeypatch):
+    source = tmp_path / 'input.h5'
+    source.touch()
+    frame = _minimal_agn_frame(4)
+    monkeypatch.setattr(hubble_utils, 'read_quasars_from_hdf5_flat', lambda *a, **k: frame.copy())
+    monkeypatch.setenv('QVC_XRAY_CATALOG', str(tmp_path / 'missing-csc.vot'))
+    _patch_load_agn_plotters(monkeypatch)
+    kwargs = dict(magnitude_convention='dereddened', cut_tier='2',
+                  plot_diagnostics=False, plot_path=str(tmp_path / 'plots'))
+    with pytest.warns(RuntimeWarning, match='skipping X-ray enrichment'):
+        selected, all_rows = hubble_utils.load_agn_data(source, **kwargs)
+    monkeypatch.setattr(hubble_utils, 'populate_xray', lambda f: f)
+    baseline, baseline_all = hubble_utils.load_agn_data(source, **kwargs)
+    assert len(selected) > 0
+    pd.testing.assert_frame_equal(selected[baseline.columns], baseline)
+    pd.testing.assert_frame_equal(all_rows[baseline_all.columns], baseline_all)
+    assert selected.attrs['csc_catalog_available'] is False
+    assert all_rows.attrs['csc_catalog_available'] is False
+    assert not selected.xray_matched.any()
+    assert 'alphaOX' not in selected

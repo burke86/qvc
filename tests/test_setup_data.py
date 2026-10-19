@@ -69,7 +69,8 @@ def test_csc_download_installs_valid_catalog_and_reuses_it(tmp_path, monkeypatch
     monkeypatch.setattr(setup_data, "CSC_CATALOG", destination)
     calls = []
 
-    def download(url, filename):
+    def download(url, filename, **kwargs):
+        assert kwargs == {"timeout": 60}
         calls.append(url)
         return str(source), filename
 
@@ -92,3 +93,87 @@ def test_csc_failed_or_truncated_response_is_not_installed(tmp_path, monkeypatch
         setup_data.fetch_csc()
     assert not destination.exists()
     assert not source.exists()
+
+
+@pytest.mark.parametrize('argv,step_list', [([], 'DEFAULT_STEPS'), (['--paper'], 'PAPER_STEPS')])
+@pytest.mark.parametrize('failure', ['http500', 'connection', 'timeout', 'short_read'])
+def test_csc_network_failure_continues_setup_and_retries(tmp_path, monkeypatch, capsys, argv, step_list, failure):
+    import urllib.error
+    import http.client
+
+    destination = tmp_path / 'csc.vot'
+    monkeypatch.setattr(setup_data, 'CSC_CATALOG', destination)
+    steps = [{'type': 'command', 'name': 'fetch_csc'},
+             {'type': 'download', 'url': 'https://example.org/required', 'folder': str(tmp_path)}]
+    monkeypatch.setattr(setup_data, step_list, steps)
+    errors = {
+        'http500': lambda: urllib.error.HTTPError(setup_data.CSC_ENDPOINT, 500, 'Internal Server Error', {}, None),
+        'connection': lambda: urllib.error.URLError('connection failed'),
+        'timeout': lambda: TimeoutError('read timed out'),
+        'short_read': lambda: http.client.IncompleteRead(b'partial', 100),
+    }
+    calls = []
+    def fail(*args, **kwargs):
+        calls.append('csc')
+        raise errors[failure]()
+    monkeypatch.setattr(setup_data, 'download_from_http', fail)
+    monkeypatch.setattr(setup_data, 'download_and_extract', lambda *a, **k: calls.append('required'))
+    setup_data.main(argv)
+    setup_data.main(argv)
+    assert calls == ['csc', 'required', 'csc', 'required']
+    assert not destination.exists()
+    output = capsys.readouterr().out
+    assert setup_data.CSC_ENDPOINT in output
+    assert 'Setup completed with CSC unavailable' in output
+    assert 'All tasks completed successfully' not in output
+
+
+def test_required_download_network_failure_remains_fatal(tmp_path, monkeypatch):
+    import urllib.error
+    monkeypatch.setattr(setup_data, 'PAPER_STEPS', [
+        {'type': 'download', 'url': 'https://example.org/required', 'folder': str(tmp_path)},
+    ])
+    def fail(*args, **kwargs):
+        raise urllib.error.URLError('required download failed')
+    monkeypatch.setattr(setup_data, 'download_from_http', fail)
+    with pytest.raises(urllib.error.URLError, match='required download failed'):
+        setup_data.main(['--paper'])
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'short_read'])
+def test_interrupted_http_download_removes_partial_file(tmp_path, monkeypatch, failure):
+    import http.client
+    headers = Message()
+    headers['Content-Type'] = 'application/octet-stream'
+    headers['Content-Length'] = '100'
+    class Response(io.BytesIO):
+        def read(self, size=-1):
+            if self.tell() and failure == 'timeout':
+                raise TimeoutError('interrupted body')
+            return super().read(size)
+        def info(self):
+            return headers
+    response = Response(b'partial')
+    options = []
+    def open_response(url, **kwargs):
+        options.append(kwargs)
+        return response
+    monkeypatch.setattr(setup_data.urllib.request, 'urlopen', open_response)
+    factory = setup_data.tempfile.NamedTemporaryFile
+    monkeypatch.setattr(setup_data.tempfile, 'NamedTemporaryFile', lambda **kwargs: factory(dir=tmp_path, **kwargs))
+    expected = TimeoutError if failure == 'timeout' else http.client.IncompleteRead
+    with pytest.raises(expected):
+        setup_data.download_from_http('https://example.org/csc', timeout=60)
+    assert options == [{'timeout': 60}]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_setup_rejects_existing_malformed_csc(tmp_path, monkeypatch):
+    import xml.etree.ElementTree as ET
+    destination = tmp_path / 'csc.vot'
+    destination.write_text('broken XML')
+    monkeypatch.setattr(setup_data, 'CSC_CATALOG', destination)
+    monkeypatch.setattr(setup_data, 'PAPER_STEPS', [{'type': 'command', 'name': 'fetch_csc'}])
+    with pytest.raises(ET.ParseError):
+        setup_data.main(['--paper'])
+    assert destination.read_text() == 'broken XML'

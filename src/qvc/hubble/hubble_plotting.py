@@ -12227,6 +12227,11 @@ def plot_residuals_vs_alphaOX(
     import numpy as np
     import matplotlib.pyplot as plt
     import matplotlib as mpl
+    if df_agn.attrs.get("csc_catalog_available") is False:
+        if sample_counts is not None:
+            sample_counts["NumAGNAlphaOXPlotted"] = 0
+        print("CSC catalog unavailable; skipping X-ray residual diagnostics.")
+        return
     clipped_mask = _resolve_clipped_mask(df_agn, clipped_mask)
     z_all = np.asarray(df_agn["z"], dtype=float)
     y_all = np.asarray(residuals, dtype=float)

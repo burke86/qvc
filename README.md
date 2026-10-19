@@ -119,8 +119,13 @@ and queries the official CSC 2.1 TAP service for the paper's X-ray region
 (-1.251 to +1.251 degrees declination, all right ascensions). It validates the
 response and produces
 `results/diagnostics/chandra_precut_sep13/csc21_region_download.vot`, the CSC
-catalog read by the paper launcher. Existing valid catalogs are reused;
-failed or truncated queries stop setup. Source matching uses the catalog's
+catalog read by the paper launcher. Existing valid catalogs are reused.
+CSC network failures (including HTTP errors and timeouts) produce a warning;
+setup continues and retries CSC on its next invocation. When the catalog is
+missing, Hubble fitting continues with the same sample and fit settings,
+but omits CSC matching and X-ray-dependent diagnostics. Setup reports that CSC
+is unavailable. Invalid catalog responses and failures downloading required
+inputs still stop setup. Source matching, when available, uses the catalog's
 positional-error ellipses during the Hubble analysis.
 The launcher regenerates the Wang completeness mock; raw fitting catalogs,
 per-object plot archives, and `Table_7.csv` are not required for this resume.

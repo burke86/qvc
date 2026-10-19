@@ -1,11 +1,13 @@
 import argparse
 import gzip
 import hashlib
+import http.client
 import os
 import shutil
 import tarfile
 import tempfile
 import urllib.parse
+import urllib.error
 import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
@@ -71,7 +73,9 @@ def fetch_csc():
         "REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "votable",
         "MAXREC": "1000000", "QUERY": CSC_QUERY,
     })
-    path, _ = download_from_http(f"{CSC_ENDPOINT}?{query}", filename=destination.name)
+    path, _ = download_from_http(
+        f"{CSC_ENDPOINT}?{query}", filename=destination.name, timeout=60,
+    )
     try:
         count = validate_csc_catalog(path)
         # Stage beside the destination so installation is atomic across filesystems.
@@ -271,12 +275,13 @@ def download_from_google_drive(url):
     return gdown.download(url, quiet=False, fuzzy=True)
 
 
-def download_from_http(url, filename=None):
+def download_from_http(url, filename=None, *, timeout=None):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"Unsupported URL scheme for non-Google download: {parsed.scheme or '<missing>'}")
 
-    with urllib.request.urlopen(url) as response:
+    request_options = {} if timeout is None else {"timeout": timeout}
+    with urllib.request.urlopen(url, **request_options) as response:
         if response.info().get_content_type() == "text/html":
             raise ValueError(f"Expected a data file but received an HTML page from {url}")
         resolved_name = filename or infer_filename_from_response(response) or infer_filename_from_url(url)
@@ -295,21 +300,30 @@ def download_from_http(url, filename=None):
                 total_bytes = parsed_length
         suffix = Path(resolved_name).suffix
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or "") as handle:
-            with tqdm(
-                total=total_bytes,
-                desc=f"      Downloading {Path(resolved_name).name}",
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                leave=False,
-            ) as progress:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    progress.update(len(chunk))
             temp_path = handle.name
+            try:
+                downloaded_bytes = 0
+                with tqdm(
+                    total=total_bytes,
+                    desc=f"      Downloading {Path(resolved_name).name}",
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    leave=False,
+                ) as progress:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        progress.update(len(chunk))
+                if total_bytes is not None and downloaded_bytes < total_bytes:
+                    raise http.client.IncompleteRead(b"", total_bytes - downloaded_bytes)
+                handle.flush()
+            except BaseException:
+                Path(temp_path).unlink(missing_ok=True)
+                raise
 
     return temp_path, resolved_name
 
@@ -514,11 +528,29 @@ def main(argv=None):
 
     print(f"{Style.BRIGHT}{Fore.MAGENTA}=== Setup Runner ===\n")
 
+    csc_unavailable = False
     for step in tqdm(steps, desc="Overall Progress", unit="step"):
-        run_step(step)
+        try:
+            run_step(step)
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                http.client.IncompleteRead) as exc:
+            normalized = normalize_step(step)
+            if normalized.get("type") != "command" or normalized.get("name") != "fetch_csc":
+                raise
+            csc_unavailable = True
+            print(
+                f"{Fore.YELLOW}WARN {Fore.RESET} CSC unavailable from {CSC_ENDPOINT}: {exc}. "
+                "Continuing setup without CSC; Hubble will skip X-ray enrichment "
+                "when the catalog is missing. The next setup run will retry."
+            )
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
         print("-" * 50)
 
-    print(f"\n{Fore.GREEN}{Style.BRIGHT}All tasks completed successfully!")
+    if csc_unavailable:
+        print(f"\n{Fore.YELLOW}{Style.BRIGHT}Setup completed with CSC unavailable.")
+    else:
+        print(f"\n{Fore.GREEN}{Style.BRIGHT}All tasks completed successfully!")
 
 
 if __name__ == "__main__":

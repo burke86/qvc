@@ -119,3 +119,28 @@ def test_tex_xray_counts_reference_and_per_model(tmp_path, monkeypatch):
     assert r"\newcommand{\resultFiducialNumAGNXrayMatched}{\ensuremath{2}}" in tex
     assert r"\newcommand{\resultFiducialNumAGNAlphaOXPlotted}{\ensuremath{2}}" in tex
     assert r"\newcommand{\resultFiducialFlatLambdaCDMNumAGNAlphaOXPlotted}{\ensuremath{1}}" in tex
+
+
+def test_missing_absolute_csc_skips_alpha_ox_without_dropping_rows(tmp_path, monkeypatch):
+    from qvc.hubble import hubble_fit
+    catalog = tmp_path / 'mounted/results/diagnostics/chandra_precut_sep13/csc21_region_download.vot'
+    monkeypatch.setenv('QVC_XRAY_CATALOG', str(catalog))
+    frame = pd.DataFrame({'object_id': ['a', 'b'], 'z': [0.5, 1.5]})
+    frame.attrs['cut_configuration_json'] = '{"unchanged": true}'
+    with pytest.warns(RuntimeWarning, match='CSC catalog not found'):
+        result = hubble_utils.populate_xray(frame)
+    pd.testing.assert_frame_equal(result[frame.columns], frame)
+    assert result.attrs['cut_configuration_json'] == frame.attrs['cut_configuration_json']
+    assert result.attrs['csc_catalog_available'] is False
+    assert not result.xray_matched.any()
+    assert result[['flux_aper_b', 'flux_aper_err_b', 'flux_aper_lolim_b', 'flux_aper_hilim_b']].isna().all().all()
+    monkeypatch.setattr(hubble_fit, '_cosmo_from_params', lambda *a: pytest.fail('CSC unavailable: must not compute alpha-OX'))
+    out = hubble_fit._compute_alpha_ox_from_posterior_median(
+        result, np.zeros((1, 1)), ['H0'], cosmo_model='FlatLambdaCDM', z_pivot=1.,
+    )
+    pd.testing.assert_frame_equal(out, result)
+    counts = {}
+    monkeypatch.setattr(hubble_plotting, '_save_figure', lambda *a, **k: pytest.fail('CSC unavailable: must not save X-ray plots'))
+    hubble_plotting.plot_residuals_vs_alphaOX(out, np.zeros(2), np.ones(2), plot_path=str(tmp_path / 'plots'), sample_counts=counts)
+    assert counts['NumAGNAlphaOXPlotted'] == 0
+    assert not (tmp_path / 'plots').exists()

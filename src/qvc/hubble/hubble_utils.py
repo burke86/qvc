@@ -590,11 +590,12 @@ def populate_xray(df, table_fpath=None):
         resolved_table_fpath = resolve_qvc_data_path(table_fpath)
     except FileNotFoundError:
         warnings.warn(
-            f"CSC3 catalog not found at {table_fpath!r}; skipping X-ray enrichment.",
+            f"CSC catalog not found at {table_fpath!r}; skipping X-ray enrichment.",
             RuntimeWarning,
             stacklevel=2,
         )
         df_out = df.copy()
+        df_out.attrs["csc_catalog_available"] = False
         df_out["xray_matched"] = False
         for col in xray_cols:
             if col not in df_out.columns:
@@ -662,6 +663,7 @@ def populate_xray(df, table_fpath=None):
                                      (best - lo),
                                      np.nan)))
     df_matched["flux_aper_err_b"] = np.clip(err, a_min=0.0, a_max=None)
+    df_matched.attrs["csc_catalog_available"] = True
 
     return df_matched
 
