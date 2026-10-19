@@ -83,24 +83,17 @@ def test_make_agn_latex_table_writes_expected_output(tmp_path):
     assert out_path.exists()
     assert r"\textbf{SDSS Name}" in latex
     assert r"$m_{2500}$" in latex
-    assert r"$\alpha_\lambda$" in latex
-    assert r"$f_{\rm AGN,5100}$" in latex
-    assert r"$f_{\rm BC,3000}$" in latex
-    assert r"$f_{\rm FeII,3000}$" in latex
+    assert r"$\alpha_\lambda$" not in latex
+    assert r"$f_{\rm AGN,5100}$" not in latex
+    assert r"$f_{\rm BC,3000}$" not in latex
+    assert r"$f_{\rm FeII,3000}$" not in latex
     assert "E(B-V)" not in latex
-    assert latex.index(r"$f_{\rm AGN,5100}$") < latex.index(r"$f_{\rm BC,3000}$")
-    assert latex.index(r"$f_{\rm BC,3000}$") < latex.index(r"$f_{\rm FeII,3000}$")
-    assert latex.index(r"$f_{\rm FeII,3000}$") < latex.index(r"$\mu$")
     assert r"$\log\tau_{\mathrm{UV,RF}}$" in latex
     assert r"$\log\sigma_{\mathrm{UV}}$" in latex
     assert r"\textbf{J123456.78+123456.7}" in latex
     assert "$123.4567$" in latex
     assert "$+12.3456$" in latex
     assert "$20.15 \\pm 0.07$" in latex
-    assert "$-1.37 \\pm 0.08$" in latex
-    assert "$0.82 \\pm 0.03$" in latex
-    assert "$0.140 \\pm 0.020$" in latex
-    assert "$0.310 \\pm 0.040$" in latex
     assert "$44.21 \\pm 0.13$" in latex
     assert "$2.34 \\pm 0.11$" in latex
     assert "$-0.88 \\pm 0.09$" in latex
@@ -147,14 +140,6 @@ def test_make_agn_csv_table_writes_expected_output(tmp_path):
         "m_2500_err",
         "m_2500_uncorr",
         "m_2500_uncorr_err",
-        "pl_slope",
-        "pl_slope_err",
-        "fracAGN_5100_fit",
-        "fracAGN_5100_fit_err",
-        "f_bc_3000",
-        "f_bc_3000_err",
-        "f_fe_uv_3000",
-        "f_fe_uv_3000_err",
         "mu",
         "mu_err",
         "log_tau_UV_RF",
@@ -167,20 +152,17 @@ def test_make_agn_csv_table_writes_expected_output(tmp_path):
     assert "is_fit_selection" not in plain.columns
     assert "PL_slope" not in plain.columns
     assert not {"ebv_agn", "ebv_agn_err", "ebv_gal", "ebv_gal_err"} & set(plain)
-    np.testing.assert_allclose(plain["f_bc_3000"], df["f_bc_3000"])
-    np.testing.assert_allclose(plain["f_fe_uv_3000_err"], df["f_fe_uv_3000_err"])
+    assert not {
+        "fracAGN_5100_fit", "fracAGN_5100_fit_err",
+        "f_bc_3000", "f_bc_3000_err", "f_fe_uv_3000", "f_fe_uv_3000_err",
+    } & set(plain)
     assert list(plain["z"]) == sorted(df["z"].tolist())
     np.testing.assert_allclose(plain["m_2500"], loaded["apparent_mag_2500_corr"])
     np.testing.assert_allclose(plain["m_2500_err"], loaded["apparent_mag_2500_corr_err"])
     np.testing.assert_allclose(plain["m_2500_uncorr"], loaded["apparent_mag_2500"])
     np.testing.assert_allclose(plain["m_2500_uncorr_err"], loaded["apparent_mag_2500_err"])
-    np.testing.assert_allclose(plain["pl_slope"], loaded["pl_slope"])
-    np.testing.assert_allclose(plain["pl_slope_err"], loaded["pl_slope_err"])
-    np.testing.assert_allclose(plain["fracAGN_5100_fit"], loaded["fracAGN_5100_fit"])
-    np.testing.assert_allclose(plain["f_bc_3000"], loaded["f_bc_3000"])
-    np.testing.assert_allclose(plain["f_bc_3000_err"], loaded["f_bc_3000_err"])
-    np.testing.assert_allclose(plain["f_fe_uv_3000"], loaded["f_fe_uv_3000"])
-    np.testing.assert_allclose(plain["f_fe_uv_3000_err"], loaded["f_fe_uv_3000_err"])
+    assert "pl_slope" in loaded and "pl_slope_err" in loaded
+    assert "pl_slope" not in plain and "pl_slope_err" not in plain
     np.testing.assert_allclose(plain["mu_err"], loaded["mu_err"])
     np.testing.assert_allclose(plain["log_tau_UV_RF_err"], loaded["log_tau_uv_rf_std_psd"])
     np.testing.assert_allclose(plain["log_sigma_UV_err"], loaded["log_sigma_uv_std_psd"])
@@ -356,14 +338,6 @@ def test_make_agn_latex_table_passes_alpha_lambda_to_4d_dm_interp(tmp_path):
         "z_err",
         "apparent_mag_2500",
         "apparent_mag_2500_err",
-        "pl_slope",
-        "pl_slope_err",
-        "fracAGN_5100_fit",
-        "fracAGN_5100_fit_err",
-        "f_bc_3000",
-        "f_bc_3000_err",
-        "f_fe_uv_3000",
-        "f_fe_uv_3000_err",
         "log_tau_uv_rf",
         "log_tau_uv_rf_std_psd",
         "log_sigma_uv",
@@ -398,22 +372,59 @@ def test_make_agn_latex_table_raises_for_missing_required_columns(tmp_path, miss
         )
 
 
-def test_make_agn_csv_table_requires_joint_sed_fields_for_plain_output(tmp_path):
-    df = _make_table_df().drop(columns=["fracAGN_5100_fit"])
+def test_make_agn_tables_do_not_require_unexported_spectral_fractions(tmp_path):
+    df = _make_table_df().drop(columns=[
+        "fracAGN_5100_fit", "fracAGN_5100_fit_err",
+        "f_bc_3000", "f_bc_3000_err",
+        "f_fe_uv_3000", "f_fe_uv_3000_err",
+    ])
 
-    with pytest.raises(KeyError, match="fracAGN_5100_fit"):
-        make_agn_csv_table(
-            df,
-            mu=np.array([44.21]),
-            mu_err=np.array([0.13]),
-            dmi_values=np.array([0.0]),
-            sort_by="z",
-            ascending=True,
-            write_path=str(tmp_path),
-        )
+    make_agn_csv_table(
+        df,
+        mu=np.array([44.21]),
+        mu_err=np.array([0.13]),
+        dmi_values=np.array([0.0]),
+        sort_by="z",
+        ascending=True,
+        write_path=str(tmp_path),
+    )
+    latex = make_agn_latex_table(
+        df,
+        mu=np.array([44.21]),
+        mu_err=np.array([0.13]),
+        dmi_values=np.array([0.0]),
+        sort_by="z",
+        ascending=True,
+        max_rows=30,
+        write_path=str(tmp_path),
+    )
 
-    assert not (tmp_path / "agn_table_all_fields.csv").exists()
-    assert not (tmp_path / "agn_table.csv").exists()
+    plain = pd.read_csv(tmp_path / "agn_table.csv")
+    assert "fracAGN_5100_fit" not in plain
+    assert "f_bc_3000" not in plain
+    assert "f_fe_uv_3000" not in plain
+    assert r"$f_{\rm AGN,5100}$" not in latex
+    assert r"$f_{\rm BC,3000}$" not in latex
+    assert r"$f_{\rm FeII,3000}$" not in latex
+
+
+def test_make_agn_tables_do_not_require_slope_fields(tmp_path):
+    df = _make_table_df().drop(columns=[
+        "pl_slope", "pl_slope_err", "alpha_lambda", "alpha_lambda_err",
+    ])
+    make_agn_csv_table(
+        df, mu=np.array([44.21]), mu_err=np.array([0.13]),
+        dmi_values=np.array([0.0]), sort_by="z", ascending=True,
+        write_path=str(tmp_path),
+    )
+    latex = make_agn_latex_table(
+        df, mu=np.array([44.21]), mu_err=np.array([0.13]),
+        dmi_values=np.array([0.0]), sort_by="z", ascending=True,
+        max_rows=30, write_path=str(tmp_path),
+    )
+    plain = pd.read_csv(tmp_path / "agn_table.csv")
+    assert "pl_slope" not in plain and "pl_slope_err" not in plain
+    assert r"$\alpha_\lambda$" not in latex
 
 
 def test_make_agn_tables_raise_without_dm_interp_or_dmi_values(tmp_path):

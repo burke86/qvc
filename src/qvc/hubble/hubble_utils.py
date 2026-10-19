@@ -4270,6 +4270,7 @@ def format_result_errors(
     unit=None,
     nd=2,
     sci_threshold=3,
+    symmetric_if_equal=False,
 ):
     """
     Return a LaTeX-ready string with fixed decimal places.
@@ -4283,7 +4284,8 @@ def format_result_errors(
 
     Notes
     -----
-    - If either err_lower or err_upper is provided, asymmetric errors are used.
+    - Upper/lower errors use asymmetric notation unless `symmetric_if_equal`
+      is enabled and both errors match at the displayed precision.
     - `unit` should already be LaTeX-ready, e.g. r"\\Msun" or r"\\mathrm{km\\,s^{-1}}".
     """
 
@@ -4318,7 +4320,11 @@ def format_result_errors(
     if use_asym:
         el = abs(errlf) / scale if errlf is not None else 0.0
         eu = abs(erruf) / scale if erruf is not None else 0.0
-        core = rf"{fmt.format(v)}^{{+{fmt.format(eu)}}}_{{-{fmt.format(el)}}}"
+        lower_text, upper_text = fmt.format(el), fmt.format(eu)
+        if symmetric_if_equal and errlf is not None and erruf is not None and lower_text == upper_text:
+            core = rf"{fmt.format(v)} \pm {upper_text}"
+        else:
+            core = rf"{fmt.format(v)}^{{+{upper_text}}}_{{-{lower_text}}}"
     elif errf is not None:
         e = abs(errf) / scale
         core = rf"{fmt.format(v)} \pm {fmt.format(e)}"
@@ -4465,7 +4471,14 @@ def write_results_tex_variables(
             _cmd("EtaSigmaPivot", f"{pivot_values_by_name['eta_sigma']:.3f}")
         )
     try:
-        sigma_tau_lambda_fit = fit_sigma_tau_lambda_broken_pl(df_agn)
+        sigma_tau_lambda_fit = fit_sigma_tau_lambda_broken_pl(
+            df_agn,
+            fit_mode="common_bootstrap",
+            lam_s=2500.0,
+            disk_order=3,
+            bootstrap_replicates=1000,
+            bootstrap_seed=2500,
+        )
     except (KeyError, ValueError) as exc:
         warnings.warn(
             "Skipping sigma/tau wavelength-fit TeX variables: "
@@ -4474,53 +4487,26 @@ def write_results_tex_variables(
         )
         sigma_tau_lambda_fit = None
     if sigma_tau_lambda_fit is not None:
-        def _tex_lambda_slope_err(err, *, floor=0.01):
-            errf = _to_finite_float(err)
-            if errf is None:
-                return err
-            return max(abs(errf), floor)
-
-        lines.append(r"% --- Sigma/tau wavelength broken power-law fit ---")
-        lines.append(
-            _cmd(
-                "EtaSigmaBlueLambda",
-                format_result_errors(
-                    sigma_tau_lambda_fit["eta_sigma_blue"],
-                    _tex_lambda_slope_err(sigma_tau_lambda_fit["eta_sigma_blue_err"]),
-                    nd=2,
-                ),
-            )
-        )
-        lines.append(
-            _cmd(
-                "EtaSigmaRedLambda",
-                format_result_errors(
-                    sigma_tau_lambda_fit["eta_sigma_red"],
-                    _tex_lambda_slope_err(sigma_tau_lambda_fit["eta_sigma_red_err"]),
-                    nd=2,
-                ),
-            )
-        )
-        lines.append(
-            _cmd(
-                "EtaTauBlueLambda",
-                format_result_errors(
-                    sigma_tau_lambda_fit["eta_tau_blue"],
-                    _tex_lambda_slope_err(sigma_tau_lambda_fit["eta_tau_blue_err"]),
-                    nd=2,
-                ),
-            )
-        )
-        lines.append(
-            _cmd(
-                "EtaTauRedLambda",
-                format_result_errors(
-                    sigma_tau_lambda_fit["eta_tau_red"],
-                    _tex_lambda_slope_err(sigma_tau_lambda_fit["eta_tau_red_err"]),
-                    nd=2,
-                ),
-            )
-        )
+        lines.append(r"% --- Sigma/tau wavelength pooled broken power-law fitted slopes ---")
+        lines.append(r"% Full-sample fits with 16th-84th percentile whole-quasar bootstrap intervals")
+        for target in ("sigma", "tau"):
+            fit = sigma_tau_lambda_fit[f"fit_{target}"]
+            for i, side in enumerate(("Blue", "Red")):
+                value = fit[f"d{i + 1}"]
+                p16, p84 = fit["slope_percentiles"][i]
+                lines.append(
+                    _cmd(
+                        f"Eta{target.capitalize()}{side}Lambda",
+                        format_result_errors(
+                            value,
+                            # Presentation floor avoids reporting a zero uncertainty.
+                            err_lower=max(value - p16, 0.001),
+                            err_upper=max(p84 - value, 0.001),
+                            nd=3,
+                            symmetric_if_equal=True,
+                        ),
+                    )
+                )
 
     for model_name, flat_samples in cosmo_model_sna_samples.items():
         flat_samples = np.asarray(flat_samples)

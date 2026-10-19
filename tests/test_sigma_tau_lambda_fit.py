@@ -141,6 +141,85 @@ def test_tau_uses_continuum_median_parameters_instead_of_stored_total_tau():
     np.testing.assert_allclose(data["y_res"], expected, rtol=2e-5, atol=2e-6)
 
 
+@pytest.mark.parametrize('prefix', ['fiducial', 'restricted'])
+@pytest.mark.parametrize('scale', [1., .01])
+def test_tex_exports_pooled_slopes_and_bootstrap_intervals(tmp_path, prefix, scale):
+    from qvc.hubble import hubble_utils
+    from qvc.hubble.hubble_model import AgnPivotContext
+
+    df, blue, red = frame()
+    for target, uv, template in (
+        ('sigma', 'log_sigma_uv', 'log_sigma_band_{}'),
+        ('tau', 'log_tau_uv_rf', 'log_tau_band_{}_RF'),
+    ):
+        for band in 'ugri':
+            col = template.format(band)
+            df[col] = df[uv] + scale * (df[col] - df[uv])
+    pivot = AgnPivotContext(
+        observable_names=('log_sigma_uv', 'log_tau_uv_rf'),
+        values=(-1., 2.), reference_object_ids=('obj1',), z_range=(.44, 3.16),
+    )
+    hubble_utils.write_results_tex_variables(
+        df, df, pd.DataFrame({'IS_CALIBRATOR': [], 'zHD': []}),
+        (.44, 3.16), {}, {}, None, str(tmp_path),
+        result_prefix=prefix, agn_pivot_context=pivot,
+    )
+    text = (tmp_path / f'param_results_{prefix}.tex').read_text()
+    x = np.log10(np.array([SDSS_LAMBDA_PIVOT[b] for b in 'ugri'])[None, :]
+                 / (1 + df.z.to_numpy()[:, None]) / 2500)
+    weights = np.column_stack(((np.minimum(x, 0)**2).sum(1),
+                               (np.maximum(x, 0)**2).sum(1)))
+    sampled_rows = np.random.default_rng(2500).integers(len(df), size=(1000, len(df)))
+    for target, factor in [('Sigma', -10), ('Tau', 1)]:
+        for i, (side, values) in enumerate([('Blue', blue), ('Red', red)]):
+            slopes = scale * factor * values
+            weight = weights[:, i]
+            value = np.average(slopes, weights=weight)
+            draws = ((slopes * weight)[sampled_rows].sum(1)
+                     / weight[sampled_rows].sum(1))
+            lo, hi = np.percentile(draws, [16, 84])
+            expected = hubble_utils.format_result_errors(
+                value, err_lower=max(value-lo, 0.001),
+                err_upper=max(hi-value, 0.001), nd=3, symmetric_if_equal=True,
+            )
+            command = rf'\newcommand{{\result{prefix.capitalize()}Eta{target}{side}Lambda}}'
+            assert command + rf'{{\ensuremath{{{expected}}}}}' in text
+    assert 'percentile whole-quasar bootstrap intervals' in text
+
+
+def test_plot_uses_empirical_median_with_unchanged_envelopes(monkeypatch):
+    import matplotlib.pyplot as plt
+    from qvc.hubble import hubble_plotting
+
+    df, blue, red = frame()
+    result = fit_sigma_tau_lambda_broken_pl(df, include_plot_payload=True)
+    monkeypatch.setattr(hubble_plotting, 'fit_sigma_tau_lambda_broken_pl',
+                        lambda *args, **kwargs: result)
+    monkeypatch.setattr(hubble_plotting, '_save_figure', lambda fig, *a, **k: fig)
+    fig = hubble_plotting.plot_sigma_tau_vs_lambda_broken_pl_fit(df, fit_mode='population')
+    try:
+        for ax, target, factor in zip(fig.axes, ['sigma', 'tau'], [-10, 1]):
+            fit = result[f'fit_{target}']
+            x, y = ax.lines[0].get_data()
+            medians = np.median(factor * np.array([blue, red]), axis=1)
+            expected = log_broken_pl(10**x, 2500, *medians)
+            np.testing.assert_allclose(y, expected)
+            assert not np.allclose(medians, [fit['d1'], fit['d2']])
+            lo, hi = slope_population_band(fit, 10**x, lam_s=2500)
+            assert np.all(y >= lo - 1e-14) and np.all(y <= hi + 1e-14)
+            anchor = np.flatnonzero(x == np.log10(2500))[0]
+            np.testing.assert_allclose([y[anchor], lo[anchor], hi[anchor]], 0, atol=1e-14)
+            # The filled artist must still contain both original envelope edges.
+            vertices = ax.collections[-1].get_paths()[0].vertices
+            for bound in (lo, hi):
+                assert all(np.any(np.isclose(vertices[:, 0], xx, rtol=0, atol=1e-12)
+                                  & np.isclose(vertices[:, 1], yy, rtol=0, atol=1e-12))
+                           for xx, yy in zip(x, bound))
+        assert 'Population median' in [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    finally:
+        plt.close(fig)
+
+
 def test_common_bootstrap_matches_explicit_paired_row_resampling():
     from qvc.hubble.sigma_tau_lambda_fit import slope_bootstrap_band
     df, _, _ = frame()
@@ -169,6 +248,20 @@ def test_common_bootstrap_matches_explicit_paired_row_resampling():
         np.testing.assert_allclose(slope_bootstrap_band(fit,grid,lam_s=2500),np.percentile(curves,[16,84],axis=0))
         assert np.all(curves[:,1] == 0)
         assert 'mean_slope_percentiles' not in fit
+
+
+def test_common_macro_offsets_and_scope():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location('regenerate',Path(__file__).parents[1]/'scripts/regenerate_sigma_tau_lambda_common_bootstrap.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = {f'fit_{target}': dict(d1=-.63 if target=='sigma' else .02, d2=-.64 if target=='sigma' else .01,
+                slope_percentiles=np.array([[-.632,-.627],[-.644,-.635]]) if target=='sigma' else np.array([[.019,.023],[.0096,.0105]])) for target in ('sigma','tau')}
+    text = 'unchanged\n'+''.join('\\newcommand{\\resultFiducialEta'+t+s+'Lambda}{old}\n' for t in ('Sigma','Tau') for s in ('Blue','Red'))+'also unchanged\n'
+    updated, macros = module.replace_macros(text,result)
+    assert updated.startswith('unchanged\n') and updated.endswith('also unchanged\n')
+    assert list(macros.values()) == ['-0.630^{+0.003}_{-0.002}','-0.640^{+0.005}_{-0.004}','0.020^{+0.003}_{-0.001}',r'0.010 \pm 0.001']
 
 
 def test_common_plot_matches_bootstrap_results(monkeypatch):
