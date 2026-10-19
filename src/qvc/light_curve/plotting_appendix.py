@@ -482,7 +482,7 @@ def plot_sigma_tau_identity_grid(
             ax.xaxis.set_minor_locator(minor)
             ax.yaxis.set_minor_locator(minor)
 
-    def _row_limits(keydict, quantity, *, include_errorbars=False):
+    def _row_limits(keydict, quantity, *, include_errorbars=False, fallback=None):
         mins = []
         maxs = []
         for band in bands:
@@ -511,6 +511,8 @@ def plot_sigma_tau_identity_grid(
             mins.append(min(x_lo, y_lo))
             maxs.append(max(x_hi, y_hi))
         if not mins:
+            if fallback is not None:
+                return _normalize_axis_limits(f"{quantity}_limits", fallback)
             raise ValueError(f"No finite matched {quantity} values available for any band.")
         lo = min(mins)
         hi = max(maxs)
@@ -541,11 +543,13 @@ def plot_sigma_tau_identity_grid(
         sigma_keys,
         "sigma",
         include_errorbars=expand_limits_for_errorbars,
+        fallback=sigma_lims if sigma_lims is not None else sigma_limits,
     )
     tau_data_limits = _row_limits(
         tau_keys,
         "tau",
         include_errorbars=expand_limits_for_errorbars,
+        fallback=tau_lims if tau_lims is not None else tau_limits,
     )
     if sigma_limits is None:
         sigma_limits = sigma_data_limits
