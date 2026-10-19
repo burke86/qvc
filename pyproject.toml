@@ -19,7 +19,7 @@ dependencies = [
     "jaxopt",
     "equinox==0.12.2",
     "jaxsedfit @ git+https://github.com/burke86/jaxsedfit.git",
-    #"EzTaoX==0.2.0",
+    "eztaox @ git+https://github.com/dutra/EzTaoX.git@dc054d2a3a216aecceb66456ab71b2e8e7174f2d",
     "matplotlib==3.10.0",
     "numpy==2.3.1",
     "numpyro==0.19.0",
