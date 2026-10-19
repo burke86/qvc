@@ -427,3 +427,29 @@ def test_context_rejects_invalid_metadata(kwargs):
 
     with pytest.raises(ValueError):
         AgnPivotContext(**valid)
+
+
+def test_fixed_pivots_preserve_sample_provenance_and_optional_medians():
+    from qvc.hubble.hubble_model import AGN_FIXED_PIVOT_RULE
+    contexts = [build_agn_pivot_context(
+        _pivot_frame(), bounds, agn_sigma_pivot=0.2, agn_tau_pivot=200,
+        use_alpha_lambda_term=True,
+    ) for bounds in [(0.2, 1.0), (0.6, 1.0)]]
+    for context in contexts:
+        np.testing.assert_allclose(context.values[:2], np.log10([0.2, 200]), rtol=0, atol=1e-14)
+        assert context.rule == AGN_FIXED_PIVOT_RULE
+    assert contexts[0].reference_object_ids != contexts[1].reference_object_ids
+    assert contexts[0].z_range != contexts[1].z_range
+    assert contexts[0].values[2] != contexts[1].values[2]
+
+
+@pytest.mark.parametrize("sigma,tau,rounding", [
+    (0.2, None, True), (None, 200, True), (0, 200, True),
+    (-0.2, 200, True), (float("nan"), 200, True),
+    (0.2, float("inf"), True), (0.2, 0, True), (0.2, 200, False),
+])
+def test_invalid_fixed_pivots(sigma, tau, rounding):
+    with pytest.raises(ValueError):
+        build_agn_pivot_context(_pivot_frame(), (0.2, 1.0),
+                                agn_sigma_pivot=sigma, agn_tau_pivot=tau,
+                                round_pivots=rounding)

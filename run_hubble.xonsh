@@ -109,7 +109,19 @@ for name, default in cut_threshold_defaults.items():
     cut_thresholds[name] = value
 
 resume_checkpoint = __xonsh__.env.get("QVC_HUBBLE_RESUME", "")
-resume_args = ["--resume", resume_checkpoint] if resume_checkpoint else []
+resume_if_exists_checkpoint = __xonsh__.env.get(
+    "QVC_HUBBLE_RESUME_IF_EXISTS", ""
+)
+if resume_checkpoint and resume_if_exists_checkpoint:
+    raise ValueError(
+        "QVC_HUBBLE_RESUME and QVC_HUBBLE_RESUME_IF_EXISTS are mutually exclusive."
+    )
+if resume_checkpoint:
+    resume_args = ["--resume", resume_checkpoint]
+elif resume_if_exists_checkpoint:
+    resume_args = ["--resume-if-exists", resume_if_exists_checkpoint]
+else:
+    resume_args = ["--resume-if-exists"]
 
 
 #h5_file = "results/data/aug18_0955pm_erlang_preview_chisq_nofluxguard_n8000_ebdef2a_chisq.h5"

@@ -148,6 +148,8 @@ from qvc.hubble.hubble_model import (
     AGN_LOGF_Z_PARAM,
     AGN_PIVOT_RULE,
     AGN_UNROUNDED_PIVOT_RULE,
+    AGN_FIXED_PIVOT_RULE,
+    validate_fixed_agn_pivots,
     DEFAULT_PRIOR_PROFILE,
     WA_OFFCENTER_PRIOR_PROFILE,
     PRIOR_PROFILE_CHOICES,
@@ -792,9 +794,10 @@ def make_run_tag(
         == "posterior-draws"
         else ""
     )
-    if pivot_rule not in (AGN_PIVOT_RULE, AGN_UNROUNDED_PIVOT_RULE):
+    if pivot_rule not in (AGN_PIVOT_RULE, AGN_UNROUNDED_PIVOT_RULE, AGN_FIXED_PIVOT_RULE):
         raise ValueError(f"Unsupported AGN pivot rule {pivot_rule!r}.")
     pivot_tag = (
+        "_pivots-fixed" if pivot_rule == AGN_FIXED_PIVOT_RULE else
         "_pivots-median" if pivot_rule == AGN_UNROUNDED_PIVOT_RULE else ""
     )
     return (
@@ -1617,7 +1620,7 @@ def resolve_resume_checkpoint_path(resume, checkpoint_file):
     return resolved_checkpoint
 
 
-def normalize_resume_by_model(resume, cosmo_models):
+def normalize_resume_by_model(resume, cosmo_models, *, option_name="--resume"):
     models = list(cosmo_models)
     if not models:
         return {}
@@ -1651,10 +1654,34 @@ def normalize_resume_by_model(resume, cosmo_models):
 
     if len(resume_paths) != len(models):
         raise ValueError(
-            "Explicit --resume checkpoint paths must match --cosmo_models one-for-one. "
+            f"Explicit {option_name} checkpoint paths must match --cosmo_models one-for-one. "
             f"Got {len(resume_paths)} resume path(s) for {len(models)} model(s): {models}."
         )
     return dict(zip(models, resume_paths))
+
+
+class ResumeIfExists:
+    """A resume request that becomes a fresh fit when no checkpoint exists."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __repr__(self):
+        return f"ResumeIfExists({self.value!r})"
+
+
+def normalize_resume_if_exists_by_model(resume_if_exists, cosmo_models):
+    """Normalize optional resume candidates without weakening strict --resume."""
+
+    normalized = normalize_resume_by_model(
+        resume_if_exists,
+        cosmo_models,
+        option_name="--resume-if-exists",
+    )
+    return {
+        model: ResumeIfExists(value)
+        for model, value in normalized.items()
+    }
 
 
 def _normalize_resume_stage(resume_stage):
@@ -1920,6 +1947,36 @@ def _resolve_two_pass_resume_checkpoint(resume, resume_stage, checkpoint_paths):
         "Resume was requested, but no compatible checkpoint file was found for "
         f"resume_stage={resume_stage!r}. Looked for: {preferred}"
     )
+
+
+def _resolve_resume_if_available(
+    resume,
+    *,
+    checkpoint_paths,
+    resume_stage,
+    apply_two_pass,
+):
+    """Resolve strict and optional resume requests to an existing path or None."""
+
+    optional = isinstance(resume, ResumeIfExists)
+    requested = resume.value if optional else resume
+    if not requested:
+        return None
+    try:
+        if apply_two_pass:
+            return _resolve_two_pass_resume_checkpoint(
+                requested,
+                resume_stage,
+                checkpoint_paths,
+            )
+        return resolve_resume_checkpoint_path(requested, checkpoint_paths["single"])
+    except FileNotFoundError:
+        if not optional:
+            raise
+        print(
+            "[INFO] --resume-if-exists found no checkpoint; starting a fresh fit."
+        )
+        return None
 
 
 def _infer_radec_column(df, candidates):
@@ -2374,10 +2431,14 @@ def _prepare_shared_agn_pivot_context(
     light_curve_uncertainty_mode="covariance",
     resume_replot_with_cuts=False,
     round_pivots=True,
+    agn_sigma_pivot=None,
+    agn_tau_pivot=None,
     bright_subsample_cut=None,
     selection_attenuation_mode="fixed-offset",
 ):
     """Build once, or strictly load once, for cosmologies sharing a fit sample."""
+
+    fixed = validate_fixed_agn_pivots(agn_sigma_pivot, agn_tau_pivot, round_pivots=round_pivots)
 
     if only_sna:
         return None
@@ -2391,6 +2452,7 @@ def _prepare_shared_agn_pivot_context(
         ),
     )
     expected_pivot_rule = (
+        AGN_FIXED_PIVOT_RULE if fixed is not None else
         AGN_PIVOT_RULE if round_pivots else AGN_UNROUNDED_PIVOT_RULE
     )
     loaded_contexts = []
@@ -2403,17 +2465,14 @@ def _prepare_shared_agn_pivot_context(
             not disable_sigma_clip_pass
             and not resume_replot_with_cuts
         )
-        if apply_two_pass:
-            checkpoint_file = _resolve_two_pass_resume_checkpoint(
-                model_resume,
-                resume_stage,
-                checkpoint_paths,
-            )
-        else:
-            checkpoint_file = resolve_resume_checkpoint_path(
-                model_resume,
-                checkpoint_paths["single"],
-            )
+        checkpoint_file = _resolve_resume_if_available(
+            model_resume,
+            checkpoint_paths=checkpoint_paths,
+            resume_stage=resume_stage,
+            apply_two_pass=apply_two_pass,
+        )
+        if checkpoint_file is None:
+            continue
         results = load_chains(checkpoint_file)
         _validate_checkpoint_bright_subsample(results, checkpoint_file, bright_subsample_cut)
         context = _load_agn_pivot_context_from_checkpoint(
@@ -2428,8 +2487,16 @@ def _prepare_shared_agn_pivot_context(
             raise RuntimeError(
                 f"AGN checkpoint '{checkpoint_file}' uses pivot rule "
                 f"{context.rule!r}; expected {expected_pivot_rule!r}. Match "
-                "the original pivot-rounding option when resuming."
+                "the original pivot options or start a new run prefix."
             )
+        if fixed is not None:
+            stored = context.as_dict()
+            actual = [stored["log_sigma_uv"], stored["log_tau_uv_rf"]]
+            if not np.allclose(actual, fixed, rtol=0.0, atol=1e-14):
+                raise RuntimeError(
+                    f"AGN checkpoint '{checkpoint_file}' has incompatible fixed pivots: "
+                    f"stored={actual}, requested={fixed}. Start a new run prefix."
+                )
         _validate_agn_pivot_checkpoint_reference_provenance(
             context,
             results,
@@ -2469,6 +2536,8 @@ def _prepare_shared_agn_pivot_context(
         use_f_agn_psf_2500_sigmoid_term=use_f_agn_psf_2500_sigmoid_term,
         use_f_agn_psf_2500_flux_fraction_term=use_f_agn_psf_2500_flux_fraction_term,
         round_pivots=round_pivots,
+        agn_sigma_pivot=agn_sigma_pivot,
+        agn_tau_pivot=agn_tau_pivot,
     )
 
 
@@ -4363,6 +4432,25 @@ def run_single(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetC
             f"[INFO] Ignoring resume_stage={resume_stage!r} because two-pass sigma clipping is disabled."
         )
 
+    checkpoint_paths = _build_checkpoint_paths(
+        prefix,
+        cosmo_model,
+        only_sna=only_sna,
+        only_agn=only_agn,
+    )
+    if isinstance(resume, ResumeIfExists):
+        resume = _resolve_resume_if_available(
+            resume,
+            checkpoint_paths=checkpoint_paths,
+            resume_stage=resume_stage,
+            apply_two_pass=apply_two_pass_sigma_clip,
+        ) or False
+        if resume_replot_with_cuts and not resume:
+            raise ValueError(
+                "--resume_replot_with_cuts requires an existing checkpoint; "
+                "--resume-if-exists did not find one."
+            )
+
     df_agn_full_sample_preclip = df_agn.copy()
     df_agn_pass2_plot_sample = df_agn_full_sample_preclip.copy()
     if resume_replot_with_cuts:
@@ -4392,7 +4480,6 @@ def run_single(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetC
         )
     pass1_diagnostics_df = None
     keep_mask_full = None
-    checkpoint_paths = _build_checkpoint_paths(prefix, cosmo_model, only_sna=only_sna, only_agn=only_agn)
     pass1_checkpoint_file = checkpoint_paths["pass1"]
     pass2_checkpoint_file = checkpoint_paths["pass2"]
     single_checkpoint_file = checkpoint_paths["single"]
@@ -5827,6 +5914,8 @@ def run_all(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetCov,
             early_de_guard=False,
             light_curve_uncertainty_mode="covariance",
             round_pivots=True,
+            agn_sigma_pivot=None,
+            agn_tau_pivot=None,
             completeness_lf_model="shen",
             selection_attenuation_mode="fixed-offset",
             df_agn_completeness_parent=None,
@@ -5867,7 +5956,9 @@ def run_all(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetCov,
     )
     mode_tag = _fit_mode_label(False, only_agn)
     compare_run_tag = f"model_compare_{mode_tag}_{speed}_{n_tag}_{z_tag}{completeness_tag}{ceph_tag}{planck_h0_tag}{planck_om_tag}{prior_profile_tag}"
-    if not round_pivots:
+    if agn_sigma_pivot is not None:
+        compare_run_tag += "_pivots-fixed"
+    elif not round_pivots:
         compare_run_tag += "_pivots-median"
     if use_alpha_lambda_term:
         compare_run_tag += "_alphaLam"
@@ -5896,7 +5987,11 @@ def run_all(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetCov,
     cosmo_model_joint_samples = {}
     agn_xray_counts = {}
     cosmo_model_sna_samples = {}
-    resume_by_model = normalize_resume_by_model(resume, cosmo_models)
+    resume_by_model = (
+        dict(resume)
+        if isinstance(resume, dict)
+        else normalize_resume_by_model(resume, cosmo_models)
+    )
     agn_pivot_context = _prepare_shared_agn_pivot_context(
         df_agn,
         cosmo_models=cosmo_models,
@@ -5924,6 +6019,8 @@ def run_all(df_agn, df_agn_all, df_pantheon, _sna_L, _sna_Lower, _sna_LogdetCov,
         prefix=prefix,
         light_curve_uncertainty_mode=light_curve_uncertainty_mode,
         round_pivots=round_pivots,
+        agn_sigma_pivot=agn_sigma_pivot,
+        agn_tau_pivot=agn_tau_pivot,
         bright_subsample_cut=bright_subsample_cut,
         selection_attenuation_mode=selection_attenuation_mode,
     )
@@ -6312,6 +6409,9 @@ def render_hubble_mode_table(args):
             else "rounded sigma/tau medians"
         )
 
+    if not args.only_sna and getattr(args, "agn_sigma_pivot", None) is not None:
+        pivot_rule = f"fixed: sigma={args.agn_sigma_pivot:g} mag, tau={args.agn_tau_pivot:g} rest-frame days"
+
     if args.disable_completeness:
         completeness = "disabled"
         selection_attenuation = "inactive (completeness disabled)"
@@ -6419,13 +6519,25 @@ if __name__ == "__main__":
         default=False,
         help="Reject Flatw0waCDM samples with w0 + wa >= 0. Disabled by default.",
     )
-    parser.add_argument(
+    resume_group = parser.add_mutually_exclusive_group()
+    resume_group.add_argument(
         "--resume",
         nargs="*",
         default=False,
         help=(
             "Resume previous MCMC run(s). With no paths, each model uses its default checkpoint. "
             "With explicit paths, pass one H5 path per --cosmo_models entry."
+        ),
+    )
+    resume_group.add_argument(
+        "--resume-if-exists",
+        "--resume_if_exists",
+        nargs="*",
+        default=None,
+        help=(
+            "Use an existing checkpoint when available, otherwise start a fresh fit. "
+            "With no paths, each model checks its default checkpoint. With explicit "
+            "paths, pass one H5 path per --cosmo_models entry."
         ),
     )
     parser.add_argument(
@@ -6757,7 +6869,16 @@ if __name__ == "__main__":
             "estimated map only reflects the catalog size relative to the LF mock."
         ),
     )
+    parser.add_argument("--agn-sigma-pivot", type=float, default=None,
+                        help="Fixed AGN variability-amplitude pivot in mag; requires --agn-tau-pivot.")
+    parser.add_argument("--agn-tau-pivot", type=float, default=None,
+                        help="Fixed AGN timescale pivot in rest-frame days; requires --agn-sigma-pivot.")
     args = parser.parse_args()
+    try:
+        validate_fixed_agn_pivots(args.agn_sigma_pivot, args.agn_tau_pivot,
+                                  round_pivots=not args.disable_pivot_rounding)
+    except ValueError as exc:
+        parser.error(str(exc))
     configure_completeness_run_args(args)
     # The completeness-map variants are consumed by the map builder through
     # environment variables (shared with run_hubble.xonsh); the flags set them
@@ -6775,7 +6896,13 @@ if __name__ == "__main__":
     print("Running Hubble fit with the following settings:")
     for k, v in vars(args).items():
         print(f"  {k}: {v}")
-    resume_by_model = normalize_resume_by_model(args.resume, args.cosmo_models)
+    if args.resume_if_exists is None:
+        resume_by_model = normalize_resume_by_model(args.resume, args.cosmo_models)
+    else:
+        resume_by_model = normalize_resume_if_exists_by_model(
+            args.resume_if_exists,
+            args.cosmo_models,
+        )
     if args.only_sna and args.only_agn:
         raise ValueError("--only_sna and --only_agn cannot be used together.")
     if (
@@ -6818,7 +6945,13 @@ if __name__ == "__main__":
         print("Using the Planck Om0 prior.")
     has_resume = any(bool(value) for value in resume_by_model.values())
     if has_resume:
-        print("Warning: Resuming previous MCMC run.")
+        if args.resume_if_exists is None:
+            print("Warning: Resuming previous MCMC run.")
+        else:
+            print(
+                "Resume-if-exists enabled: existing checkpoints will be resumed; "
+                "missing checkpoints will start fresh fits."
+            )
     if args.resume_replot_with_cuts:
         if not has_resume:
             raise ValueError("--resume_replot_with_cuts requires --resume path/to/posteriors.h5.")
@@ -7005,6 +7138,8 @@ if __name__ == "__main__":
             prefix=args.prefix,
             light_curve_uncertainty_mode="covariance",
             round_pivots=not args.disable_pivot_rounding,
+            agn_sigma_pivot=args.agn_sigma_pivot,
+            agn_tau_pivot=args.agn_tau_pivot,
         )
         for cosmo_model in args.cosmo_models:
             run_single_jax(
@@ -7068,6 +7203,8 @@ if __name__ == "__main__":
             light_curve_uncertainty_mode=args.light_curve_uncertainty_mode,
             resume_replot_with_cuts=args.resume_replot_with_cuts,
             round_pivots=not args.disable_pivot_rounding,
+            agn_sigma_pivot=args.agn_sigma_pivot,
+            agn_tau_pivot=args.agn_tau_pivot,
             bright_subsample_cut=bright_subsample_cut,
             selection_attenuation_mode=args.selection_attenuation_mode,
         )
@@ -7185,7 +7322,7 @@ if __name__ == "__main__":
                 disable_sigma_clip_pass=args.disable_sigma_clip_pass,
                 sigma_clip_threshold=args.sigma_clip_threshold,
                 z_range=args.z_range,
-                speed=args.speed, resume=args.resume, N=effective_N,
+                speed=args.speed, resume=resume_by_model, N=effective_N,
                 resume_stage=args.resume_stage,
                 sigma_clip_second_pass_mode=args.sigma_clip_second_pass_mode,
                 completeness=not args.disable_completeness,
@@ -7209,6 +7346,8 @@ if __name__ == "__main__":
                 light_curve_uncertainty_mode=args.light_curve_uncertainty_mode,
                 early_de_guard=args.early_de_guard,
                 round_pivots=not args.disable_pivot_rounding,
+                agn_sigma_pivot=args.agn_sigma_pivot,
+                agn_tau_pivot=args.agn_tau_pivot,
                 completeness_lf_model=args.completeness_lf_model,
                 selection_attenuation_mode=args.selection_attenuation_mode,
                 df_agn_completeness_parent=df_agn_completeness_parent,

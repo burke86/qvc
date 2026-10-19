@@ -33,7 +33,7 @@ def _checkpoint_payload(context=None):
     }
 
 
-def _prepare_resume_replot_context(current, checkpoint, *, round_pivots=True):
+def _prepare_resume_replot_context(current, checkpoint, *, round_pivots=True, **pivot_options):
     return hubble_fit._prepare_shared_agn_pivot_context(
         current,
         cosmo_models=["FlatLambdaCDM"],
@@ -59,6 +59,7 @@ def _prepare_resume_replot_context(current, checkpoint, *, round_pivots=True):
         prefix="unit",
         resume_replot_with_cuts=True,
         round_pivots=round_pivots,
+        **pivot_options,
     )
 
 
@@ -93,7 +94,7 @@ def test_resume_requires_matching_pivot_rounding_rule(tmp_path):
         **_checkpoint_payload(expected),
     )
 
-    with pytest.raises(RuntimeError, match="original pivot-rounding option"):
+    with pytest.raises(RuntimeError, match="original pivot options"):
         _prepare_resume_replot_context(_reference_frame(), checkpoint)
 
     actual = _prepare_resume_replot_context(
@@ -580,3 +581,46 @@ def test_multi_cosmology_resume_rejects_different_contexts(tmp_path):
             resume_stage="both",
             prefix="unit",
         )
+
+
+def test_fixed_pivots_checkpoint_resume_and_mismatch(tmp_path):
+    context = build_agn_pivot_context(_reference_frame(), (0.5, 1.5),
+                                      agn_sigma_pivot=0.2, agn_tau_pivot=200)
+    checkpoint = tmp_path / "fixed.h5"
+    hubble_fit.save_chains(checkpoint, **_checkpoint_payload(context))
+    actual = _prepare_resume_replot_context(_reference_frame(), checkpoint,
+                                            agn_sigma_pivot=0.2, agn_tau_pivot=200)
+    assert actual == context
+    with pytest.raises(RuntimeError, match="incompatible fixed pivots"):
+        _prepare_resume_replot_context(_reference_frame(), checkpoint,
+                                       agn_sigma_pivot=0.1, agn_tau_pivot=200)
+    with pytest.raises(RuntimeError, match="pivot rule"):
+        _prepare_resume_replot_context(_reference_frame(), checkpoint)
+
+
+def test_fixed_request_rejects_median_checkpoint_even_when_values_match(tmp_path):
+    checkpoint = tmp_path / "median.h5"
+    context = _context()
+    hubble_fit.save_chains(checkpoint, **_checkpoint_payload(context))
+    with pytest.raises(RuntimeError, match="pivot rule"):
+        _prepare_resume_replot_context(_reference_frame(), checkpoint,
+            agn_sigma_pivot=10**context.values[0], agn_tau_pivot=10**context.values[1])
+
+
+@pytest.mark.parametrize("sample,bounds", [("fiducial", (0.5, 1.5)), ("restricted", (1.0, 1.5))])
+def test_fixed_pivots_export_hdf5_and_tex_across_models(tmp_path, sample, bounds):
+    from qvc.hubble.hubble_utils import write_results_tex_variables
+    frame = _reference_frame()
+    context = build_agn_pivot_context(frame, bounds, agn_sigma_pivot=0.2, agn_tau_pivot=200)
+    for model in ("FlatLambdaCDM", "FlatwCDM", "Flatw0waCDM"):
+        checkpoint = tmp_path / f"{model}.h5"
+        hubble_fit.save_chains(checkpoint, **_checkpoint_payload(context))
+        loaded = hubble_fit._load_agn_pivot_context_from_checkpoint(
+            hubble_fit.load_chains(checkpoint), checkpoint_file=checkpoint)
+        np.testing.assert_allclose(10 ** np.array(loaded.values), [0.2, 200])
+    write_results_tex_variables(frame, frame,
+        pd.DataFrame({"IS_CALIBRATOR": [], "zHD": []}), bounds, {}, {}, None,
+        str(tmp_path), result_prefix=sample, agn_pivot_context=loaded)
+    text = (tmp_path / f"param_results_{sample}.tex").read_text()
+    assert "SigmauvPivot}{\\ensuremath{0.2}}" in text
+    assert "TauuvrfPivot}{\\ensuremath{200}}" in text

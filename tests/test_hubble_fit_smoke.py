@@ -3919,6 +3919,66 @@ def test_normalize_resume_by_model_multiple_models_matching_paths():
     ) == {"FlatLambdaCDM": "flatlambda.h5", "FlatwCDM": "flatw.h5"}
 
 
+def test_normalize_resume_if_exists_by_model_wraps_default_requests():
+    normalized = hubble_fit.normalize_resume_if_exists_by_model(
+        [],
+        ["FlatLambdaCDM", "FlatwCDM"],
+    )
+
+    assert set(normalized) == {"FlatLambdaCDM", "FlatwCDM"}
+    assert all(
+        isinstance(value, hubble_fit.ResumeIfExists)
+        and value.value is True
+        for value in normalized.values()
+    )
+
+
+def test_normalize_resume_if_exists_by_model_reports_its_own_flag():
+    with pytest.raises(ValueError, match="--resume-if-exists"):
+        hubble_fit.normalize_resume_if_exists_by_model(
+            ["only-one.h5"],
+            ["FlatLambdaCDM", "FlatwCDM"],
+        )
+
+
+def test_resolve_resume_if_available_falls_back_only_for_optional_request(tmp_path):
+    paths = {
+        "single": str(tmp_path / "single.h5"),
+        "pass1": str(tmp_path / "pass1.h5"),
+        "pass2": str(tmp_path / "pass2.h5"),
+    }
+
+    assert hubble_fit._resolve_resume_if_available(
+        hubble_fit.ResumeIfExists(True),
+        checkpoint_paths=paths,
+        resume_stage="both",
+        apply_two_pass=False,
+    ) is None
+    with pytest.raises(FileNotFoundError):
+        hubble_fit._resolve_resume_if_available(
+            True,
+            checkpoint_paths=paths,
+            resume_stage="both",
+            apply_two_pass=False,
+        )
+
+
+def test_resolve_resume_if_available_uses_best_existing_two_pass_checkpoint(tmp_path):
+    paths = {
+        "single": str(tmp_path / "single.h5"),
+        "pass1": str(tmp_path / "pass1.h5"),
+        "pass2": str(tmp_path / "pass2.h5"),
+    }
+    Path(paths["pass1"]).touch()
+
+    assert hubble_fit._resolve_resume_if_available(
+        hubble_fit.ResumeIfExists(True),
+        checkpoint_paths=paths,
+        resume_stage="both",
+        apply_two_pass=True,
+    ) == paths["pass1"]
+
+
 @pytest.mark.parametrize(
     "resume_values",
     [
@@ -6195,6 +6255,26 @@ def test_run_hubble_forwards_light_curve_uncertainty_mode():
         in runner
     )
     assert "--light-curve-uncertainty-mode @(light_curve_uncertainty_mode)" in runner
+
+
+def test_run_hubble_exposes_resume_if_exists_environment_switch():
+    runner = (ROOT / "run_hubble.xonsh").read_text(encoding="utf-8")
+
+    assert '"QVC_HUBBLE_RESUME_IF_EXISTS", ""' in runner
+    assert '["--resume-if-exists", resume_if_exists_checkpoint]' in runner
+    assert (
+        "QVC_HUBBLE_RESUME and QVC_HUBBLE_RESUME_IF_EXISTS are mutually exclusive"
+        in runner
+    )
+
+
+def test_run_hubble_resume_flag_is_only_supplied_by_conditional_args():
+    runner = (ROOT / "run_hubble.xonsh").read_text(encoding="utf-8")
+    assert 'else:\n    resume_args = ["--resume-if-exists"]' in runner
+    command = runner.split("python -m qvc.hubble.hubble_fit", 1)[1]
+    assert "@(resume_args)" in command
+    assert "--resume-if-exists" not in command
+    assert "--resume " not in command
 
 
 def test_run_hubble_forwards_configurable_cumulative_cut_tier():
