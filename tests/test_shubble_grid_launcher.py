@@ -198,7 +198,7 @@ def test_default_cuts_match_sep19b_standard_profile():
 
 
 @pytest.mark.skipif(XONSH is None, reason="xonsh is required")
-def test_hubble_arguments_match_current_paper_fiducial_profile(monkeypatch, tmp_path):
+def test_hubble_arguments_match_shared_paper_settings_with_explicit_grid_differences(tmp_path):
     launcher = load_launcher()
     args = launcher.parse_args(["--description", "compare"])
     settings, _ = launcher.resolve_paper_settings(args, {})
@@ -235,9 +235,26 @@ def test_hubble_arguments_match_current_paper_fiducial_profile(monkeypatch, tmp_
     intended_differences = {
         "--run", "--plot-completeness", "--N",
         "--uniform_redshift_distribution", "--minimal-plots",
+        "--spectra_fit_csv", "--agn-sigma-pivot", "--agn-tau-pivot", "--resume",
     }
     assert paper["--run"] == ["full"]
     assert grid["--run"] == ["single"]
+    # The published-paper launcher resumes fixed-pivot checkpoints, whereas
+    # the historical N/z grid starts fresh fits with sample-median pivots.
+    assert paper["--resume"] == []
+    assert paper["--agn-sigma-pivot"] == ["0.2"]
+    assert paper["--agn-tau-pivot"] == ["200"]
+    for flag in ("--resume", "--resume-if-exists", "--agn-sigma-pivot",
+                 "--agn-tau-pivot", "--disable-pivot-rounding"):
+        assert flag not in grid
+    assert paper["--spectra_fit_csv"] == ["results/data/spectra_data.h5"]
+    assert paper_argv[-1] == "results/data/light_curve_data.h5"
+    assert grid["--spectra_fit_csv"] == [
+        "results/data/jaxqsofit/aug31_w500s500_d01c034.h5"
+    ]
+    assert grid_argv[-1] == (
+        "results/data/sep09_svi10000lr0003w500s250_specaug31w500s250_83cb31d.h5"
+    )
     assert {k: v for k, v in paper.items() if k not in intended_differences} == {
         k: v for k, v in grid.items() if k not in intended_differences
     }
