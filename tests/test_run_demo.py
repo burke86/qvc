@@ -30,6 +30,13 @@ with open(os.environ["CALL_LOG"], "a") as stream:
 if args[:2] == ["-m", "qvc.setup_data"]:
     if os.environ.get("SETUP_FAIL") == "1":
         sys.exit(19)
+    if "--light-curve" in args or "--spectra" in args:
+        from qvc.setup_data import LIGHT_CURVE_DEMO_FILES
+        for name in LIGHT_CURVE_DEMO_FILES:
+            path = Path(os.environ["QVC_DATA_DIR"]) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        sys.exit(0)
     from qvc.setup_data import PAPER_STEPS
     for step in PAPER_STEPS:
         if step["type"] == "download" and not step["filename"].endswith(".zip"):
@@ -46,7 +53,7 @@ if args[:2] == ["-m", "qvc.setup_data"]:
                 path.touch()
 elif args[:2] == ["-m", "xonsh"]:
     os.execv(sys.executable, [sys.executable, *args])
-elif args[:2] not in (["-m", "qvc.hubble.hubble_fit"], ["-m", "qvc.spectra.fit_spectra"]):
+elif args[:2] not in (["-m", "qvc.hubble.hubble_fit"], ["-m", "qvc.spectra.fit_spectra_jaxsedfit_joint"], ["-m", "qvc.light_curve.fit_light_curves"]):
     sys.exit(20)
 ''')
     stub.chmod(0o755)
@@ -104,7 +111,7 @@ def test_incomplete_setup_never_launches_inference(tmp_path, kwargs):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("command", ["all", "light-curve", "spectra"])
+@pytest.mark.parametrize("command", ["all"])
 def test_raw_fitting_inputs_are_required_before_downloads(tmp_path, command):
     result, calls, _ = run_demo(tmp_path, command)
     assert result.returncode != 0
@@ -113,11 +120,25 @@ def test_raw_fitting_inputs_are_required_before_downloads(tmp_path, command):
 
 
 def test_spectrum_refit_uses_object_id_not_published_summary(tmp_path):
-    result, calls, _ = run_demo(tmp_path, "spectra", raw=True)
+    result, calls, _ = run_demo(tmp_path, "spectra")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert calls[0]["args"] == ["-m", "qvc.setup_data"]
+    assert calls[0]["args"] == ["-m", "qvc.setup_data", "--spectra"]
     args = calls[1]["args"]
-    assert args[:2] == ["-m", "qvc.spectra.fit_spectra"]
+    assert args[:2] == ["-m", "qvc.spectra.fit_spectra_jaxsedfit_joint"]
     assert "--fpath-in" not in args
-    assert args[args.index("--filter_object_id") + 1] == "1452887"
-    assert "results/data/spectra/demo.csv" in args
+    assert args[args.index("--filter_object_id") + 1] == "1448770"
+    assert "results/data/spectra/demo.h5" in args
+    assert args[args.index("--sed-photometry-path") + 1].endswith("demo_J233151.91+003258.3_sed.csv")
+    assert "--no-save-fig" not in args
+    assert "--plot_mcmc_diagnostics" not in args
+
+
+@pytest.mark.parametrize("docker", [False, True])
+def test_light_curve_downloads_single_object_before_fitting(tmp_path, docker):
+    result, calls, work = run_demo(tmp_path, "light-curve", docker=docker)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls[0]["args"] == ["-m", "qvc.setup_data", "--light-curve"]
+    args = calls[1]["args"]
+    assert args[:2] == ["-m", "qvc.light_curve.fit_light_curves"]
+    assert args[args.index("--filter_object_id") + 1] == "1448770"
+    assert (work / "data/S82/Catalog.parquet").is_file()

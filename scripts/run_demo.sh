@@ -26,7 +26,8 @@ export QVC_DUSTMAPS_DIR
 export PYTHONPATH="${QVC_CODE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 DEMO_PREFIX="${DEMO_PREFIX:-demo}"
-DEMO_OBJECT_ID="${DEMO_OBJECT_ID:-1452887}"
+DEMO_LIGHT_CURVE_OBJECT_ID="${DEMO_OBJECT_ID:-1448770}"
+DEMO_OBJECT_ID="${DEMO_OBJECT_ID:-1448770}"
 
 HUBBLE_LC_H5="${QVC_WORKDIR}/results/data/light_curve_data.h5"
 HUBBLE_SPECTRA_H5="${QVC_WORKDIR}/results/data/spectra_data.h5"
@@ -70,9 +71,9 @@ run_light_curve() {
   export PREFIX="${DEMO_PREFIX}"
   export SUFFIX="${DEMO_PREFIX}"
 
-  log "running light-curve fit for object ${DEMO_OBJECT_ID}"
+  log "running light-curve fit for object ${DEMO_LIGHT_CURVE_OBJECT_ID}"
   python -m qvc.light_curve.fit_light_curves \
-    --filter_object_id "${DEMO_OBJECT_ID}" \
+    --filter_object_id "${DEMO_LIGHT_CURVE_OBJECT_ID}" \
     --svi_steps 100 \
     --nwarm 100 \
     --nsamp 100 \
@@ -89,20 +90,22 @@ run_spectra() {
 
   mkdir -p "results/data/spectra" "results/spectra/${DEMO_PREFIX}" "plots/spectra/${DEMO_PREFIX}"
 
-  log "running spectra fit for object ${DEMO_OBJECT_ID}"
-  python -m qvc.spectra.fit_spectra \
+  log "running joint SED and spectrum fit for object ${DEMO_OBJECT_ID}"
+  python -m qvc.spectra.fit_spectra_jaxsedfit_joint \
     --mode fit \
-    "results/data/spectra/${DEMO_PREFIX}.csv" \
-    --cache-dir "data/spectra_cache_all" \
+    "results/data/spectra/${DEMO_PREFIX}.h5" \
+    --sed-photometry-path "${QVC_SED_PHOTOMETRY_PATH:-${QVC_DATA_DIR}/demo_J233151.91+003258.3_sed.csv}" \
+    --cache-dir "${QVC_DATA_DIR}/spectra_cache_all" \
+    --dr16q-fits "${QVC_DATA_DIR}/dr16q_prop_May01_2024.fits" \
+    --dsps-ssp-fn "${QVC_DATA_DIR}/ssp_data_continuum_fsps_v3.2_lgmet_age.h5" \
     --output-dir "results/spectra/${DEMO_PREFIX}" \
     --fig-dir "plots/spectra/${DEMO_PREFIX}" \
-    --verbose \
-    --save-fig \
-    --nuts-warmup 100 \
-    --nuts-samples 100 \
+    --optax-steps "${DEMO_OPTAX_STEPS:-100}" \
+    --nuts-warmup "${DEMO_NUTS_WARMUP:-100}" \
+    --nuts-samples "${DEMO_NUTS_SAMPLES:-100}" \
     --nuts-chains 1 \
     --filter_object_id "${DEMO_OBJECT_ID}" \
-    --plot_mcmc_diagnostics \
+    --progress \
     --nproc 1
 }
 
@@ -134,13 +137,13 @@ case "${COMMAND}" in
     run_setup
     ;;
   light-curve)
+    run_setup --light-curve
     require_raw_light_curves
-    run_setup
     run_light_curve
     ;;
   spectra)
+    run_setup --spectra
     require_raw_light_curves
-    run_setup
     run_spectra
     ;;
   hubble)

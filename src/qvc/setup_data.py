@@ -1,6 +1,7 @@
 import argparse
 import gzip
 import hashlib
+from importlib.resources import files as package_files
 import http.client
 import os
 import shutil
@@ -112,7 +113,98 @@ def fetch_dustmaps():
     print(f"{Fore.GREEN}OK   {Fore.RESET} dustmaps SFD data fetched.")
 
 
+LIGHT_CURVE_DEMO_URL = "https://drive.google.com/file/d/1MghLBBfCaS-7e8jHyI7yWzKja3vpVP85/view?usp=sharing"
+LIGHT_CURVE_DEMO_MD5 = "520a3a323a60d65bbb177f45bd8a20cd"
+LIGHT_CURVE_DEMO_FILES = (
+    "S82/Catalog.parquet", "S82/dr16s82_sdssLCRaw.parquet",
+    "S82/dr16s82_ps1LCRaw.parquet", "S82/dr16s82_ZuberLCRaw.parquet",
+    "S82/dr16s82_sdssSeeing.parquet", "S82/dr16s82_ps1Seeing.parquet",
+    "S82/dr16s82_ztfSeeing.parquet", "dr16q_prop_May01_2024.fits",
+)
+
+
+SPECTRUM_DEMO_URL = "https://drive.google.com/file/d/1RRRLpcsvros4K-AKW8dAwHBEhVK8y2FT/view?usp=sharing"
+SPECTRUM_DEMO_MD5 = "3bfb733c29a47308c21b7ea2937e27ac"
+SPECTRUM_DEMO_FILES = (
+    "spectra_cache_all/spec-9202-57713-0009.fits",
+    "demo_J233151.91+003258.3_sed.csv",
+)
+
+
+def _fetch_single_object_bundle(url, checksum, files, *, allow_matching_partial=False):
+    """Install a checked bundle without replacing existing catalogs or spectra."""
+    destination = Path(os.environ.get("QVC_DATA_DIR", "data")).expanduser()
+    present = [(destination / name).is_file() for name in files]
+    if all(present):
+        print(f"SKIP Single-object inputs already exist in {destination}.")
+        return
+    if not allow_matching_partial and any((destination / name).exists() for name in files):
+        raise FileExistsError(
+            f"Incomplete existing single-object inputs in {destination}; "
+            "use a separate empty data directory to avoid mixing catalogs."
+        )
+    with tempfile.TemporaryDirectory() as work:
+        archive = Path(work) / "single_object_demo.zip"
+        downloaded = gdown.download(url, output=str(archive), quiet=False, fuzzy=True)
+        if not downloaded:
+            raise RuntimeError("Single-object download returned no file")
+        verify_md5(archive, checksum)
+        with zipfile.ZipFile(archive) as bundle:
+            expected = {f"data/{name}" for name in files}
+            actual = {entry.filename for entry in bundle.infolist() if not entry.is_dir()}
+            if actual != expected:
+                raise ValueError("Unexpected files in the single-object archive")
+            if bundle.testzip() is not None:
+                raise ValueError("Corrupt single-object archive")
+            # Check every existing member before installing any missing member.
+            # This permits upgrading the old spectrum-only bundle safely.
+            for name in files:
+                target = destination / name
+                if target.exists() and (
+                    not target.is_file() or target.read_bytes() != bundle.read(f"data/{name}")
+                ):
+                    raise FileExistsError(f"Different existing demo data at {target}; refusing to overwrite")
+            for name in files:
+                target = destination / name
+                if target.exists():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(f"data/{name}") as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+    print(f"OK Installed SDSS J233151.91+003258.3 (object 1448770) in {destination}.")
+
+
+def fetch_light_curve_demo():
+    _fetch_single_object_bundle(LIGHT_CURVE_DEMO_URL, LIGHT_CURVE_DEMO_MD5, LIGHT_CURVE_DEMO_FILES)
+
+
+def fetch_spectrum_demo():
+    _fetch_single_object_bundle(
+        SPECTRUM_DEMO_URL, SPECTRUM_DEMO_MD5, SPECTRUM_DEMO_FILES,
+        allow_matching_partial=True,
+    )
+
+
+def install_demo_sed_photometry():
+    """Install the measured broadband SED rows shipped with the single-object demo."""
+    destination = Path(os.environ.get("QVC_DATA_DIR", "data")).expanduser()
+    destination.mkdir(parents=True, exist_ok=True)
+    resources = package_files("qvc.spectra").joinpath("demo_inputs")
+    for name in ("demo_J233151.91+003258.3_sed.csv", "demo_J233151.91+003258.3_sed.provenance.json"):
+        target = destination / name
+        content = resources.joinpath(name).read_bytes()
+        if target.exists():
+            if target.read_bytes() != content:
+                raise FileExistsError(f"Different existing demo SED data at {target}; refusing to overwrite")
+            continue
+        target.write_bytes(content)
+    print(f"OK Single-object broadband SED photometry installed in {destination}.")
+
+
 COMMANDS = {
+    "install_demo_sed_photometry": install_demo_sed_photometry,
+    "fetch_spectrum_demo": fetch_spectrum_demo,
+    "fetch_light_curve_demo": fetch_light_curve_demo,
     "fetch_dustmaps": fetch_dustmaps,
     "fetch_csc": fetch_csc,
 }
@@ -138,12 +230,8 @@ DEFAULT_STEPS = [
         "filename": "spectra_data.h5",
         "md5": "6ce97a192dc077929a1de73059e7a8a9",
     },
-    {
-        "type": "download",
-        "url": "https://drive.google.com/file/d/1UTGwSZXfLm8kSAKTDHeS9r685isycLeC/view?usp=sharing",
-        "folder": "data/spectra_cache_all",
-        "filename": "spec-9152-58041-0926.fits",
-    },
+    {"type": "command", "name": "fetch_spectrum_demo"},
+    {"type": "command", "name": "install_demo_sed_photometry"},
     {
         "type": "download",
         "url": "https://zenodo.org/records/23021880/files/hubble_posteriors.zip?download=1",
@@ -501,6 +589,14 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Download demo or appendix datasets used by QVC.")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
+        "--spectra", action="store_true",
+        help="Download single-object photometry, cached spectrum, stellar templates and dust maps.",
+    )
+    selection.add_argument(
+        "--light-curve", action="store_true",
+        help="Download only the raw single-object inputs for SDSS J233151.91+003258.3.",
+    )
+    selection.add_argument(
         "--paper",
         action="store_true",
         help="Download the published Hubble resume inputs and external Pantheon/CSC data.",
@@ -514,6 +610,19 @@ def build_parser():
 
 
 def get_steps(args):
+    if args.spectra:
+        template = next(dict(step) for step in DEFAULT_STEPS
+                        if step.get("filename") == "ssp_data_continuum_fsps_v3.2_lgmet_age.h5")
+        template["folder"] = os.environ.get("QVC_DATA_DIR", "data")
+        return [
+            {"type": "command", "name": "fetch_light_curve_demo"},
+            {"type": "command", "name": "fetch_spectrum_demo"},
+            {"type": "command", "name": "install_demo_sed_photometry"},
+            template,
+            {"type": "command", "name": "fetch_dustmaps"},
+        ]
+    if args.light_curve:
+        return [{"type": "command", "name": "fetch_light_curve_demo"}]
     if args.paper:
         return PAPER_STEPS
     if args.appendix:

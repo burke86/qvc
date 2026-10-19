@@ -1,0 +1,9 @@
+{
+  "object_id": "1448770",
+  "sdss_name": "233151.91+003258.3",
+  "source": "data/jul14_master_input_file_chisqgt20_bandwagon_photometry.csv",
+  "source_sha256": "529b94ef10258a0296b36afc0ed37cfaca07fb929b4b437008161217e911e61a",
+  "rows": 10,
+  "selection": "Exact object_id match; original fluxes, errors and spatial metadata preserved. SDSS ugriz supplied by the light-curve loader.",
+  "csv_sha256": "97e358933d098cc4a3cb4518e97ef3afbeafb7b67456ce30f554de4337effa5e"
+}

@@ -3,10 +3,10 @@
 This repository provides end-to-end tooling for:
 
 1. Multi-band AGN light-curve fitting
-2. Spectral fitting with JAXQSOFit
+2. Joint SED and spectral fitting with JAXSEDFit
 3. Hubble-diagram fitting and figure generation
 
-The quick-start workflow downloads the published Zenodo summaries and recreates the Hubble runs with saved posteriors. Optional light-curve and spectrum refitting requires additional raw S82 inputs (see below).
+The quick-start workflow downloads the published Zenodo summaries and recreates the Hubble runs with saved posteriors. The single-object light-curve and spectrum setup modes download their own inputs (see below).
 
 The resulting figures are found under `docker-workdir/plots/` when run with Docker, or under `plots/` for a local run.
 
@@ -47,7 +47,7 @@ hubble
 
 The `hubble` command runs `setup_data --paper` automatically inside `docker-workdir`, then strictly resumes the published checkpoints. It generates the Wang completeness mock locally and copies the paper figures and tables into `docker-workdir/plots/paper/`. If CSC is unavailable, the two X-ray figures are omitted from the copy; any older destination copies remain unchanged. Results and plots remain in the mounted directory. Set `QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1` explicitly to skip copying. The image defaults to `hubble` when no command is supplied.
 
-`all`, `light-curve`, and `spectra` additionally require the raw S82 files described below. Place them in `docker-workdir/data/S82/` before using those commands. Full `setup` also downloads the fitting dependencies and dustmaps into the mounted directory.
+`light-curve` automatically downloads the single-object bundle for SDSS J233151.91+003258.3 (object `1448770`) and fits it. `spectra` installs the same object’s photometry, its cached spectrum, stellar templates, and dust maps. It uses the installed `jaxsedfit` backend to generate both the joint SED and spectrum figures; standalone `jaxqsofit` is not required. `all` still requires preinstalled raw inputs. Full `setup` also downloads the fitting dependencies and dustmaps into the mounted directory.
 
 ## Local Install
 
@@ -72,13 +72,12 @@ Run the published Hubble replication workflow:
 bash scripts/run_demo.sh hubble
 ```
 
-With the raw S82 inputs installed, you can also run the fitting stages (or `all`):
+Both the light-curve and spectrum commands install their own demo inputs:
 
 ```bash
-bash scripts/run_demo.sh setup
 bash scripts/run_demo.sh light-curve
-bash scripts/run_demo.sh spectra
 bash scripts/run_demo.sh hubble
+bash scripts/run_demo.sh spectra
 ```
 
 Alternatively, you may call each command directly. Note again that these commands will run a minimal number of warmup and sampling steps for speed; the produced plots may have minor deviations from the published figures. The published figures were run with longer warmup and sampling steps in Yale's HPC Clusters.
@@ -95,7 +94,7 @@ checkpoints; missing checkpoints fail rather than starting a new fit.
 
 ### Setup
 
-Downloads the cached spectrum, DR16Q catalog, Hubble inputs, legacy completeness mock, DSPS data, Pantheon+ files, CSC catalog, and dustmaps. Raw S82 photometry is not included in this setup.
+Downloads the cached spectrum, DR16Q catalog, Hubble inputs, legacy completeness mock, DSPS data, Pantheon+ files, CSC catalog, and dustmaps. For the single-object raw-photometry bundle alone, use `python -m qvc.setup_data --light-curve`. Use `python -m qvc.setup_data --spectra` to also install its cached spectrum, DSPS templates, and dust maps.
 
 Expected output: downloaded inputs under `data/`, `results/data/`, `results/cosmo/`, `results/hubble_posteriors/`, and dustmaps under `results/dustmaps/`.
 
@@ -134,28 +133,38 @@ The command above skips the full manuscript asset-copy step, which needs assets 
 ### Raw inputs for optional refitting
 
 The Zenodo HDF5 files contain fit summaries, not individual photometric epochs.
-Both refitting stages require these additional files under `data/S82/`:
+The fitting loaders use these files under `data/S82/`:
 
 - `Catalog.parquet`
 - `dr16s82_sdssLCRaw.parquet`
 - `dr16s82_ps1LCRaw.parquet`
 - `dr16s82_ZuberLCRaw.parquet`
 
-`setup_data` currently has no download source for these files. Supply them from
-the original S82 dataset before running the refitting commands; the demo runner
-checks for them before downloading fitting dependencies. The published Hubble
-workflow above does not require them. Run `python -m qvc.setup_data` before
-calling the individual fitting modules directly.
+For SDSS J233151.91+003258.3 (object `1448770`), download the raw inputs with:
+
+```bash
+python -m qvc.setup_data --light-curve
+```
+
+This installs the four Parquet files above, three matching seeing sidecars, and
+a one-row `data/dr16q_prop_May01_2024.fits` from the
+[Google Drive bundle](https://drive.google.com/file/d/1MghLBBfCaS-7e8jHyI7yWzKja3vpVP85/view).
+The archive checksum and file list are verified before installation. Existing
+complete inputs are reused; a partially populated destination is rejected to
+avoid mixing or overwriting catalogs. Set `QVC_DATA_DIR` to a separate empty
+directory when needed. Other objects still require their original raw inputs.
+The bundle contains no posterior samples: `--resume` requires a separately
+saved per-object sample file under `results/samples/<PREFIX>/`.
 
 ### Light Curve Fitting
 
-Fits the demo AGN light curve for object `1452887` with reduced SVI/NUTS sampling and writes the local light-curve result files and plots.
+Fits the demo AGN light curve for SDSS J233151.91+003258.3, object `1448770` with reduced SVI/NUTS sampling and writes the local light-curve result files and plots.
 
 Expected output: results under `results/data/demo/` and figures under `plots/multiband/demo/`.
 
 ```bash
 PREFIX=demo SUFFIX=demo python -m qvc.light_curve.fit_light_curves \
-  --filter_object_id 1452887 \
+  --filter_object_id 1448770 \
   --svi_steps 100 \
   --nwarm 100 \
   --nsamp 100 \
@@ -172,7 +181,7 @@ dedicated entry point:
 ```bash
 PREFIX=latent_demo SUFFIX=latent_demo \
 python -m qvc.light_curve.fit_light_curves_shared_latent_blr \
-  --filter_object_id 1452887 \
+  --filter_object_id 1448770 \
   --nwarm 500 \
   --nsamp 250 \
   --nchains 2 \
@@ -210,50 +219,44 @@ combination with at least three usable epoch-level PSF-FWHM measurements and
 nonzero seeing range, this fits both a centered mean-flux slope and a
 seeing-dependent extra-scatter slope. It is disabled by default.
 
-### Spectra Fitting
+### Joint SED and Spectrum Fitting
 
-Fits the matching cached SDSS spectrum with `qvc.spectra.fit_spectra`, saving the output CSV, fit figures, and MCMC diagnostic plots.
-
-Expected output: the fit CSV at `results/data/spectra/demo.csv`, result artifacts under `results/spectra/demo/`, and figures under `plots/spectra/demo/`.
-
-```bash
-python -m qvc.spectra.fit_spectra \
-  --mode fit \
-  "results/data/spectra/demo.csv" \
-  --cache-dir "data/spectra_cache_all" \
-  --output-dir "results/spectra/demo" \
-  --fig-dir "plots/spectra/demo" \
-  --verbose \
-  --save-fig \
-  --nuts-warmup 100 \
-  --nuts-samples 100 \
-  --nuts-chains 1 \
-  --filter_object_id 1452887 \
-  --plot_mcmc_diagnostics \
-  --nproc 1
-```
-
-An experimental SED-first companion jointly fits a saved broadband-SED table
-and the SDSS spectrum with JAXSEDFit. It keeps the native `fit_spectra` sample
-matching and spectrum cache, always replaces saved SDSS points with the QVC
-light-curve PSF `ugriz` means (including `z` even when it is excluded from the
-variability fit), and uses JAXSEDFit's `jaxqsofit` joint spectral backend:
-The summary CSV includes `m_2500_dereddened` from the intrinsic AGN disk plus
-separate `a_2500_galaxy` and `a_2500_internal` attenuation estimates.
+The `spectra` demo fits SDSS J233151.91+003258.3 (object `1448770`,
+plate 9202, MJD 57713, fiber 9) with `qvc.spectra.fit_spectra_jaxsedfit_joint`.
+A single joint fit produces both the broadband SED figure and the resolved
+spectrum figure, using the `jaxsedfit` dependency already installed in Docker.
+The older standalone `fit_spectra` command is not used by this demo.
 
 ```bash
-python -m qvc.spectra.fit_spectra_jaxsedfit_joint \
-  --mode fit \
-  "results/data/spectra/demo_joint.csv" \
-  --cache-dir "data/spectra_cache_all" \
-  --sed-photometry-path "/path/to/saved_sed_photometry.parquet" \
-  --output-dir "results/jaxsedfit_joint/demo" \
-  --fig-dir "plots/jaxsedfit_joint/demo" \
-  --dsps-ssp-fn "data/ssp_data_continuum_fsps_v3.2_lgmet_age.h5" \
-  --filter_object_id 1452887 \
-  --progress \
-  --nproc 1
+bash scripts/run_demo.sh spectra
 ```
+
+Setup downloads the single-object photometry/DR16Q bundle and the
+[spectrum and SED bundle](https://drive.google.com/file/d/1RRRLpcsvros4K-AKW8dAwHBEhVK8y2FT/view),
+which includes the 10-row UV/near-IR/WISE SED table, installs its packaged provenance,
+and prepares the stellar templates and dust maps. SDSS ugriz photometry comes
+from the object's light-curve means. No additional SED download is needed.
+To install just these inputs, run `python -m qvc.setup_data --spectra`.
+
+Default outputs:
+
+- `results/data/spectra/demo.h5`: fit catalog.
+- `results/spectra/demo/`: saved joint posterior bundle.
+- `plots/spectra/demo/z1.010_233151.91+003258.3_joint.pdf`: joint SED figure.
+- `plots/spectra/demo/z1.010_233151.91+003258.3_spectrum.pdf`: spectrum figure.
+
+A short execution check (not a convergence test):
+
+```bash
+DEMO_OPTAX_STEPS=10 DEMO_NUTS_WARMUP=5 DEMO_NUTS_SAMPLES=5 \
+  bash scripts/run_demo.sh spectra
+```
+
+Pass these variables with Docker's `-e` option for the same short run in a
+container. Their defaults are 100 optimization steps, 100 warmup steps, and
+100 posterior draws in one chain. Set `DEMO_PREFIX` to keep separate runs.
+For another object, supply its input data and set `DEMO_OBJECT_ID` and
+`QVC_SED_PHOTOMETRY_PATH` to that object's saved broadband table.
 
 ### Hubble Diagram Fitting
 

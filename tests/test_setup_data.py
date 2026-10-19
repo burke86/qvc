@@ -177,3 +177,115 @@ def test_setup_rejects_existing_malformed_csc(tmp_path, monkeypatch):
     with pytest.raises(ET.ParseError):
         setup_data.main(['--paper'])
     assert destination.read_text() == 'broken XML'
+
+
+def test_single_object_setup_downloads_and_reuses_bundle(tmp_path, monkeypatch):
+    import shutil
+    archive = tmp_path / 'source.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        for name in setup_data.LIGHT_CURVE_DEMO_FILES:
+            bundle.writestr('data/' + name, name.encode())
+    monkeypatch.setattr(setup_data, 'LIGHT_CURVE_DEMO_MD5', hashlib.md5(archive.read_bytes()).hexdigest())
+    destination = tmp_path / 'installed'
+    monkeypatch.setenv('QVC_DATA_DIR', str(destination))
+    calls = []
+    def download(url, output, **kwargs):
+        calls.append(url)
+        return shutil.copyfile(archive, output)
+    monkeypatch.setattr(setup_data.gdown, 'download', download)
+    setup_data.main(['--light-curve'])
+    setup_data.main(['--light-curve'])
+    assert calls == [setup_data.LIGHT_CURVE_DEMO_URL]
+    for name in setup_data.LIGHT_CURVE_DEMO_FILES:
+        assert (destination / name).read_bytes() == name.encode()
+
+
+def test_single_object_setup_preserves_partial_existing_catalogs(tmp_path, monkeypatch):
+    monkeypatch.setenv('QVC_DATA_DIR', str(tmp_path))
+    existing = tmp_path / 'dr16q_prop_May01_2024.fits'
+    existing.write_bytes(b'original full catalog')
+    monkeypatch.setattr(setup_data.gdown, 'download', lambda *a, **k: pytest.fail('must not download'))
+    with pytest.raises(FileExistsError, match='avoid mixing catalogs'):
+        setup_data.main(['--light-curve'])
+    assert existing.read_bytes() == b'original full catalog'
+
+
+def test_single_object_setup_rejects_bad_checksum(tmp_path, monkeypatch):
+    monkeypatch.setenv('QVC_DATA_DIR', str(tmp_path / 'installed'))
+    def download(url, output, **kwargs):
+        from pathlib import Path
+        Path(output).write_bytes(b'bad archive')
+        return output
+    monkeypatch.setattr(setup_data.gdown, 'download', download)
+    with pytest.raises(ValueError, match='MD5 mismatch'):
+        setup_data.main(['--light-curve'])
+    assert not (tmp_path / 'installed').exists()
+
+
+def test_spectra_setup_selects_only_required_dependencies(tmp_path, monkeypatch):
+    monkeypatch.setenv('QVC_DATA_DIR', str(tmp_path))
+    steps = setup_data.get_steps(setup_data.build_parser().parse_args(['--spectra']))
+    assert [s['name'] for s in steps if s['type'] == 'command'] == [
+        'fetch_light_curve_demo', 'fetch_spectrum_demo', 'install_demo_sed_photometry', 'fetch_dustmaps']
+    downloads = [s for s in steps if s['type'] == 'download']
+    assert len(downloads) == 1
+    assert downloads[0]['filename'] == 'ssp_data_continuum_fsps_v3.2_lgmet_age.h5'
+    assert downloads[0]['folder'] == str(tmp_path)
+
+
+@pytest.mark.parametrize("existing", ["none", "spectrum", "sed", "conflicting_spectrum"])
+def test_spectrum_bundle_installs_exact_cache_and_reuses_it(tmp_path, monkeypatch, existing):
+    import shutil
+    archive = tmp_path / 'source.zip'
+    member, sed = setup_data.SPECTRUM_DEMO_FILES
+    contents = {member: b'single spectrum', sed: b'single object SED'}
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        for name, content in contents.items():
+            bundle.writestr('data/' + name, content)
+    monkeypatch.setattr(setup_data, 'SPECTRUM_DEMO_MD5', hashlib.md5(archive.read_bytes()).hexdigest())
+    destination = tmp_path / 'installed'
+    monkeypatch.setenv('QVC_DATA_DIR', str(destination))
+    calls = []
+    def download(url, output, **kwargs):
+        calls.append(url)
+        return shutil.copyfile(archive, output)
+    monkeypatch.setattr(setup_data.gdown, 'download', download)
+    if existing != 'none':
+        name = sed if existing == 'sed' else member
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'user data' if existing == 'conflicting_spectrum' else contents[name])
+        before = target.stat().st_mtime_ns
+    if existing == 'conflicting_spectrum':
+        with pytest.raises(FileExistsError, match='refusing to overwrite'):
+            setup_data.fetch_spectrum_demo()
+        assert target.read_bytes() == b'user data'
+        assert not (destination / sed).exists()
+        return
+    setup_data.fetch_spectrum_demo()
+    setup_data.fetch_spectrum_demo()
+    if existing != 'none':
+        assert target.stat().st_mtime_ns == before
+    assert calls == [setup_data.SPECTRUM_DEMO_URL]
+    for name, content in contents.items():
+        assert (destination / name).read_bytes() == content
+    assert {p.relative_to(destination).as_posix() for p in destination.rglob('*') if p.is_file()} == set(contents)
+
+
+def test_demo_sed_resource_contains_only_measured_target_rows(tmp_path, monkeypatch):
+    import pandas as pd
+    import json
+    monkeypatch.setenv('QVC_DATA_DIR', str(tmp_path))
+    setup_data.install_demo_sed_photometry()
+    setup_data.install_demo_sed_photometry()
+    path = tmp_path / 'demo_J233151.91+003258.3_sed.csv'
+    frame = pd.read_csv(path)
+    assert set(frame.object_id) == {1448770}
+    assert len(frame) == 10
+    assert frame.filter_name.nunique() == 10
+    assert (frame.flux_err_mjy > 0).all()
+    provenance = json.loads(path.with_suffix('.provenance.json').read_text())
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == provenance['csv_sha256']
+    path.write_text('existing user data')
+    with pytest.raises(FileExistsError, match='refusing to overwrite'):
+        setup_data.install_demo_sed_photometry()
