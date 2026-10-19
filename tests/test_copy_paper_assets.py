@@ -94,3 +94,26 @@ def test_custom_destination_is_flat(tmp_path):
     assert (dest / 'hubble_diagram.pdf').is_file()
     assert all(path.is_file() for path in dest.iterdir())
     assert not (tmp_path / 'plots/paper').exists()
+
+
+def test_mounted_workspace_without_csc_copies_non_xray_assets(tmp_path):
+    _, run, _ = setup_sources(tmp_path)
+    (tmp_path / 'src').rmdir()
+    for name in ('alphaOX_residuals.pdf', 'delta_alphaOX_residuals.pdf'):
+        (run / name).unlink()
+    result = execute(tmp_path, '--skip-xray')
+    assert result.returncode == 0, result.stderr
+    assert 'CSC unavailable' in result.stderr
+    dest = tmp_path / 'plots/paper'
+    assert (dest / 'hubble_diagram.pdf').read_bytes() == (run / 'hubble_diagram.pdf').read_bytes()
+    assert not (dest / 'alphaOx_residuals.pdf').exists()
+    assert not (dest / 'delta_alphaOX_residuals.pdf').exists()
+
+
+def test_missing_xray_is_still_an_error_without_explicit_skip(tmp_path):
+    _, run, _ = setup_sources(tmp_path)
+    (run / 'alphaOX_residuals.pdf').unlink()
+    result = execute(tmp_path)
+    assert result.returncode != 0
+    assert 'alphaOX_residuals.pdf' in result.stderr
+    assert not (tmp_path / 'plots/paper').exists()

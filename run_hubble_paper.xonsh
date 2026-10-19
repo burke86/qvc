@@ -226,9 +226,11 @@ for result_prefix, prefix, z_min in (
         @(h5_file)
 
 if skip_paper_asset_copy:
-    echo "Skipping paper asset copy for exploratory run."
+    echo "Skipping paper asset copy: QVC_HUBBLE_SKIP_PAPER_ASSET_COPY is enabled."
 else:
-    bash scripts/copy_paper_assets.sh \
+    copy_script = Path(__file__).resolve().parent / "scripts" / "copy_paper_assets.sh"
+    copy_options = [] if Path(str($QVC_XRAY_CATALOG)).is_file() else ["--skip-xray"]
+    bash @(str(copy_script)) @(copy_options) \
         --speed @(speed) \
         --fiducial-dir @(str(Path("plots/hubble") / fiducial_prefix)) \
         --restricted-dir @(str(Path("plots/hubble") / restricted_prefix))

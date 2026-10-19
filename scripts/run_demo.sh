@@ -125,7 +125,6 @@ run_hubble() {
 
   # Resolve inputs in the mounted workspace, not the installed source tree.
   export QVC_XRAY_CATALOG="${QVC_XRAY_CATALOG:-${QVC_WORKDIR}/results/diagnostics/chandra_precut_sep13/csc21_region_download.vot}"
-  export QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1
   log "resuming the published fiducial and restricted Hubble checkpoints"
   python -m xonsh --no-rc "${QVC_CODE_DIR}/run_hubble_paper.xonsh"
 }

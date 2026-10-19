@@ -32,6 +32,9 @@ sys.exit(17 if len(previous) + 1 == int(os.environ["LAUNCHER_TEST_FAIL_AT"]) els
     env = {k: v for k, v in os.environ.items() if not k.startswith("QVC_")}
     env.update(PATH=f"{tmp_path}{os.pathsep}{env['PATH']}",
                LAUNCHER_TEST_LOG=str(log), LAUNCHER_TEST_FAIL_AT=str(fail_at))
+    catalog = tmp_path / "csc.vot"
+    catalog.touch()
+    env["QVC_XRAY_CATALOG"] = str(catalog)
     env.update(overrides or {})
     result = subprocess.run([XONSH, "--no-rc", str(ROOT / launcher), *args],
                             cwd=ROOT, env=env, capture_output=True, text=True)
@@ -131,7 +134,7 @@ def test_science_profile_and_paper_outputs(tmp_path, overrides, args):
                 assert call["env"][key] == value
         for key, default in expected_profile.items():
             assert call["env"][key] == overrides.get(key, default)
-    assert calls[2]["args"] == ["scripts/copy_paper_assets.sh", "--speed",
+    assert calls[2]["args"] == [str(ROOT / "scripts/copy_paper_assets.sh"), "--speed",
                                  overrides.get("QVC_HUBBLE_SPEED", "standard"),
                                  "--fiducial-dir", f"plots/hubble/{expected_prefix}",
                                  "--restricted-dir", "plots/hubble/" + overrides.get("QVC_HUBBLE_RESTRICTED_PREFIX", "restricted")]
@@ -168,3 +171,12 @@ def test_invalid_setting_fails_before_launch(tmp_path, key):
     result, calls = launch(tmp_path, "run_hubble_paper.xonsh", {key: "invalid"})
     assert result.returncode != 0
     assert calls == []
+
+
+def test_missing_csc_copies_remaining_paper_assets(tmp_path):
+    result, calls = launch(tmp_path, "run_hubble_paper.xonsh", {
+        "QVC_XRAY_CATALOG": str(tmp_path / "missing-csc.vot"),
+    })
+    assert result.returncode == 0, result.stderr
+    assert calls[-1]["command"] == "bash"
+    assert calls[-1]["args"][:2] == [str(ROOT / "scripts/copy_paper_assets.sh"), "--skip-xray"]

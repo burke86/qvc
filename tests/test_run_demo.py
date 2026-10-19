@@ -50,6 +50,15 @@ elif args[:2] not in (["-m", "qvc.hubble.hubble_fit"], ["-m", "qvc.spectra.fit_s
     sys.exit(20)
 ''')
     stub.chmod(0o755)
+    copy_stub = bin_dir / "bash"
+    copy_stub.write_text(f'''#!{sys.executable}
+import json, os, sys
+if not sys.argv[1].endswith("copy_paper_assets.sh"):
+    os.execv("/bin/bash", ["/bin/bash", *sys.argv[1:]])
+with open(os.environ["CALL_LOG"], "a") as stream:
+    stream.write(json.dumps({{"args": sys.argv[1:], "cwd": os.getcwd()}}) + "\\n")
+''')
+    copy_stub.chmod(0o755)
     log = tmp_path / "calls.jsonl"
     env = {k: v for k, v in os.environ.items() if not k.startswith("QVC_")}
     env.update(PATH=f"{bin_dir}:{env['PATH']}", QVC_CODE_DIR=str(ROOT),
@@ -57,7 +66,7 @@ elif args[:2] not in (["-m", "qvc.hubble.hubble_fit"], ["-m", "qvc.spectra.fit_s
                XONSH_HISTORY_BACKEND="dummy", MISSING_CHECKPOINT=str(int(missing)),
                SETUP_FAIL=str(int(setup_fail)))
     script = "docker_entrypoint.sh" if docker else "run_demo.sh"
-    args = ["bash", str(ROOT / "scripts" / script)]
+    args = ["/bin/bash", str(ROOT / "scripts" / script)]
     if command is not None:
         args.append(command)
     result = subprocess.run(args, cwd=tmp_path, env=env, capture_output=True, text=True)
@@ -70,7 +79,13 @@ def test_published_resume_in_separate_workspace(tmp_path, docker, command):
     result, calls, work = run_demo(tmp_path, command, docker=docker)
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls[0]["args"] == ["-m", "qvc.setup_data", "--paper"]
-    assert len(calls) == 4  # setup, xonsh, two strict resumes; no manuscript copy
+    assert len(calls) == 5  # setup, xonsh, two strict resumes, manuscript copy
+    assert calls[-1]["args"] == [str(ROOT / "scripts/copy_paper_assets.sh"),
+                                 "--skip-xray", "--speed", "standard",
+                                 "--fiducial-dir", "plots/hubble/fiducial",
+                                 "--restricted-dir", "plots/hubble/restricted"]
+    assert calls[-1]["cwd"] == str(work)
+    assert "Skipping paper asset copy" not in result.stdout
     for call, sample in zip(calls[2:], ("fiducial", "restricted")):
         args = call["args"]
         assert args[:3] == ["-m", "qvc.hubble.hubble_fit", "--resume"]

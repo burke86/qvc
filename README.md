@@ -45,7 +45,7 @@ spectra
 hubble
 ```
 
-The `hubble` command runs `setup_data --paper` automatically inside `docker-workdir`, then strictly resumes the published checkpoints. It generates the Wang completeness mock locally and skips copying unrelated manuscript assets. Results and plots remain in the mounted directory. The image defaults to `hubble` when no command is supplied.
+The `hubble` command runs `setup_data --paper` automatically inside `docker-workdir`, then strictly resumes the published checkpoints. It generates the Wang completeness mock locally and copies the paper figures and tables into `docker-workdir/plots/paper/`. If CSC is unavailable, the two X-ray figures are omitted from the copy; any older destination copies remain unchanged. Results and plots remain in the mounted directory. Set `QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1` explicitly to skip copying. The image defaults to `hubble` when no command is supplied.
 
 `all`, `light-curve`, and `spectra` additionally require the raw S82 files described below. Place them in `docker-workdir/data/S82/` before using those commands. Full `setup` also downloads the fitting dependencies and dustmaps into the mounted directory.
 

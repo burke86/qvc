@@ -10,13 +10,14 @@ Usage:
     --fiducial-dir plots/hubble/fiducial_run \
     [--restricted-dir plots/hubble/restricted_run] \
     [--only hubble|spectra|light-curve|appendix] \
-    [--draft path/to/draft.tex] [--dry-run] [--dest-dir path/to/assets]
+    [--draft path/to/draft.tex] [--dry-run] [--dest-dir path/to/assets] [--skip-xray]
 
 Description:
   Copy paper-ready plots, tables and TeX parameter files into plots/paper/.
 
 Notes:
-  - Run this from the repository root.
+  - Run this from the workspace containing plots/ (the repository or mounted workspace).
+  - --skip-xray omits the two CSC-dependent figures when CSC is unavailable.
   - --speed must match the hubble run tag used inside the source directories.
   - Supports current short directory names and unique legacy completeness-tagged names.
   - Missing or ambiguous sources abort before any destination files are changed.
@@ -33,12 +34,11 @@ EOF
 require_repo_root() {
   local required=(
     "plots"
-    "src"
   )
   local item
   for item in "${required[@]}"; do
     if [[ ! -e "$item" ]]; then
-      echo "error: expected to run from the repo root; missing '$item' in $(pwd)" >&2
+      echo "error: expected to run from the workspace root; missing '$item' in $(pwd)" >&2
       exit 1
     fi
   done
@@ -83,9 +83,14 @@ RESTRICTED_DIR=""
 DRAFT_PATH=""
 ONLY_GROUP=""
 DRY_RUN=false
+SKIP_XRAY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --skip-xray)
+      SKIP_XRAY=true
+      shift
+      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -221,8 +226,12 @@ copy_hubble_assets() {
   copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/agn_table.tex" "hubble" "agn_table.tex"
   copy_from_dir "$FIDUCIAL_DIR" "diagnostics/sigma_tau_psd_fixed_postcut.pdf" "hubble" "sigma_tau_psd_fixed_postcut.pdf"
   copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/predicted_vs_actual_M2500_debias.pdf" "hubble" "predicted_vs_actual_M2500_debias.pdf"
-  copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/alphaOX_residuals.pdf" "hubble" "alphaOx_residuals.pdf"
-  copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/delta_alphaOX_residuals.pdf" "hubble" "delta_alphaOX_residuals.pdf"
+  if [[ "$SKIP_XRAY" == true ]]; then
+    echo "CSC unavailable: omitting alphaOX and delta_alphaOX paper figures; any existing destination copies are unchanged." >&2
+  else
+    copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/alphaOX_residuals.pdf" "hubble" "alphaOx_residuals.pdf"
+    copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/delta_alphaOX_residuals.pdf" "hubble" "delta_alphaOX_residuals.pdf"
+  fi
   copy_from_dir "$FIDUCIAL_DIR" "$FIDUCIAL_RUN_DIR/completeness/completeness_map_with_absolute_percent_contours.pdf" "hubble" "completeness_map_with_absolute_percent_contours.pdf"
   copy_from_dir "$FIDUCIAL_DIR" "diagnostics/blr_postcut.pdf" "hubble" "blr_postcut.pdf"
   copy_from_dir "$FIDUCIAL_DIR" "diagnostics/sigma_tau_vs_lambda_broken_pl_fit_postcut.pdf" "hubble" "sigma_tau_vs_lambda_broken_pl_fit_postcut.pdf"
