@@ -14,8 +14,6 @@ def test_populate_spectra_fit_reads_v3_joint_draws(monkeypatch, tmp_path):
             "object_id": ["101"],
             "fit_ok": [True],
             "fit_backend": ["jaxsedfit_joint"],
-            "fracAGN_5100_fit": [0.8],
-            "fracAGN_5100_fit_err": [0.05],
             "m_2500_dereddened": [20.0],
             "m_2500_dereddened_err": [0.1],
             "m_2500_attenuated_model": [20.4],
@@ -69,6 +67,7 @@ def test_populate_spectra_fit_reads_v3_joint_draws(monkeypatch, tmp_path):
     )
 
     assert result.loc[0, "pl_slope"] == -1.5
+    assert "fracAGN_5100_fit" not in result.columns
     assert result.loc[0, "joint_posterior_valid_count"] == 2
     np.testing.assert_allclose(
         result.loc[0, "m_2500_dereddened_draws"][:2],
@@ -85,3 +84,19 @@ def test_populate_spectra_fit_reads_v3_joint_draws(monkeypatch, tmp_path):
             "allow_legacy_v3_host_capture_metadata": True,
         }
     ]
+
+
+def test_populate_spectra_fit_accepts_missing_slopes(tmp_path):
+    spectra_path = tmp_path / "spectra.csv"
+    pd.DataFrame({
+        "object_id": ["101"], "fit_ok": [True],
+        "fit_backend": ["jaxsedfit_joint"],
+        "m_2500_dereddened": [20.0],
+        "m_2500_dereddened_err": [0.1],
+        "m_2500_attenuated_model": [20.4],
+        "m_2500_attenuated_model_err": [0.12],
+    }).to_csv(spectra_path, index=False)
+    result = hubble_utils.populate_spectra_fit(
+        pd.DataFrame({"object_id": ["101"]}), [spectra_path]
+    )
+    assert "pl_slope" not in result and "alpha_lambda" not in result

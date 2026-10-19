@@ -74,6 +74,13 @@ from qvc.hubble.hubble_model import (
     resolve_model_option_flags,
     infer_use_alpha_lambda_term,
 )
+from qvc.hubble.minimal_inputs import (
+    FORMAT_ATTR as MINIMAL_INPUT_FORMAT_ATTR,
+    LIGHT_CURVE_FORMAT as MINIMAL_LIGHT_CURVE_FORMAT,
+    SPECTRA_FORMAT as MINIMAL_SPECTRA_FORMAT,
+    read_minimal_spectra_hdf5,
+    validate_minimal_light_curve_hdf5,
+)
 from qvc.hubble.sigma_tau_lambda_fit import fit_sigma_tau_lambda_broken_pl
 from qvc.light_curve.posterior_draws import (
     LIGHT_CURVE_LOG_SIGMA_DRAW_COL,
@@ -818,16 +825,16 @@ def populate_spectra_fit(
     required_cols = {
         "fit_ok",
         "fit_backend",
-        "fracAGN_5100_fit",
-        "fracAGN_5100_fit_err",
         "m_2500_dereddened",
         "m_2500_dereddened_err",
         "m_2500_attenuated_model",
         "m_2500_attenuated_model_err",
-        "pl_slope",
-        "pl_slope_err",
     }
     required_numeric_cols = required_cols - {"fit_ok", "fit_backend"}
+    optional_numeric_cols = {
+        "fracAGN_5100_fit", "fracAGN_5100_fit_err",
+        "pl_slope", "pl_slope_err", "alpha_lambda", "alpha_lambda_err",
+    }
 
     df = _ensure_object_id(df.copy())
     input_attrs = dict(df.attrs)
@@ -843,23 +850,35 @@ def populate_spectra_fit(
             f"({i+1}/{len(spectra_fit_paths)}): {input_path}\033[0m"
         )
         if is_hdf5:
-            reader_kwargs = {"include_fraction_draws": True}
-            if allow_legacy_v3_host_capture_metadata:
-                reader_kwargs["allow_legacy_v3_host_capture_metadata"] = True
-            catalog = read_spectra_catalog_hdf5(
-                input_path,
-                **reader_kwargs,
-            )
-            df_spectra = catalog.frame.copy()
-            if catalog.catalog_format == "qvc_spectra_catalog_v3":
-                for field, draws in catalog.joint_posterior_draws.items():
-                    df_spectra[f"{field}_draws"] = [
-                        np.asarray(row, dtype=float) for row in draws
-                    ]
-                df_spectra["joint_posterior_valid_count"] = np.asarray(
-                    catalog.joint_posterior_valid_count,
-                    dtype=np.int16,
+            try:
+                with h5py.File(input_path, "r") as handle:
+                    minimal_format = str(
+                        handle.attrs.get(MINIMAL_INPUT_FORMAT_ATTR, "")
+                    )
+            except OSError:
+                # Preserve the existing reader boundary for mocked and malformed
+                # legacy inputs; it owns their final validation/error message.
+                minimal_format = ""
+            if minimal_format == MINIMAL_SPECTRA_FORMAT:
+                df_spectra = read_minimal_spectra_hdf5(input_path)
+            else:
+                reader_kwargs = {"include_fraction_draws": True}
+                if allow_legacy_v3_host_capture_metadata:
+                    reader_kwargs["allow_legacy_v3_host_capture_metadata"] = True
+                catalog = read_spectra_catalog_hdf5(
+                    input_path,
+                    **reader_kwargs,
                 )
+                df_spectra = catalog.frame.copy()
+                if catalog.catalog_format == "qvc_spectra_catalog_v3":
+                    for field, draws in catalog.joint_posterior_draws.items():
+                        df_spectra[f"{field}_draws"] = [
+                            np.asarray(row, dtype=float) for row in draws
+                        ]
+                    df_spectra["joint_posterior_valid_count"] = np.asarray(
+                        catalog.joint_posterior_valid_count,
+                        dtype=np.int16,
+                    )
         else:
             df_spectra = pd.read_csv(
                 input_path,
@@ -882,7 +901,10 @@ def populate_spectra_fit(
                 f"Spectra fit {input_kind} '{input_path}' is missing required columns {missing_required}. "
                 "This Hubble workflow only accepts fit_spectra_jaxsedfit_joint.py output."
             )
-        for column in sorted(required_numeric_cols):
+        numeric_cols = required_numeric_cols | (
+            optional_numeric_cols & set(df_spectra.columns)
+        )
+        for column in sorted(numeric_cols):
             try:
                 df_spectra[column] = pd.to_numeric(df_spectra[column], errors="raise")
             except (TypeError, ValueError) as exc:
@@ -940,13 +962,13 @@ def populate_spectra_fit(
     out.attrs["spectra_fit_discarded_columns"] = ()
     out.attrs["light_curve_discarded_columns"] = tuple(conflicting_columns)
     print(f"Matched {len(out)} successful SED fits to {len(df)} AGN light-curve rows.")
-    if "alpha_lambda" not in out.columns:
+    if "alpha_lambda" not in out.columns and "pl_slope" in out.columns:
         out["alpha_lambda"] = out["pl_slope"]
-    if "alpha_lambda_err" not in out.columns:
+    if "alpha_lambda_err" not in out.columns and "pl_slope_err" in out.columns:
         out["alpha_lambda_err"] = out["pl_slope_err"]
-    if "alpha_nu" not in out.columns:
+    if "alpha_nu" not in out.columns and "alpha_lambda" in out.columns:
         out["alpha_nu"] = -out["alpha_lambda"] - 2
-    if "alpha_nu_err" not in out.columns:
+    if "alpha_nu_err" not in out.columns and "alpha_lambda_err" in out.columns:
         out["alpha_nu_err"] = out["alpha_lambda_err"]
 
     return out
@@ -1197,6 +1219,9 @@ def read_quasars_from_hdf5_flat(
         return arr
 
     with h5py.File(file_path, "r") as hdf:
+        minimal_format = str(hdf.attrs.get(MINIMAL_INPUT_FORMAT_ATTR, ""))
+        if minimal_format == MINIMAL_LIGHT_CURVE_FORMAT:
+            validate_minimal_light_curve_hdf5(hdf)
         keys = list(hdf.keys())
         if not keys:
             return pd.DataFrame()

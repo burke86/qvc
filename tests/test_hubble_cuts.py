@@ -381,12 +381,13 @@ def test_rhat_cuts_reject_missing_and_bad_finite_values():
         np.testing.assert_array_equal(mask, [True, False, False, False, False])
 
 
-def test_current_spectra_schema_requires_fracagn_5100_fit(tmp_path):
+def test_current_spectra_schema_accepts_missing_fracagn_5100_fit(tmp_path):
     csv_path = tmp_path / "spectra.csv"
     pd.DataFrame(
         {
             "object_id": ["obj"],
             "fit_ok": [True],
+            "fit_backend": ["jaxsedfit_joint"],
             "m_2500_dereddened": [20.0],
             "m_2500_dereddened_err": [0.1],
             "m_2500_attenuated_model": [20.1],
@@ -396,8 +397,10 @@ def test_current_spectra_schema_requires_fracagn_5100_fit(tmp_path):
         }
     ).to_csv(csv_path, index=False)
 
-    with np.testing.assert_raises_regex(ValueError, "fracAGN_5100_fit"):
-        populate_spectra_fit(pd.DataFrame({"object_id": ["obj"]}), [csv_path])
+    out = populate_spectra_fit(pd.DataFrame({"object_id": ["obj"]}), [csv_path])
+    assert out["object_id"].tolist() == ["obj"]
+    assert "fracAGN_5100_fit" not in out.columns
+    assert "fracAGN_5100_fit_err" not in out.columns
 
 
 def test_current_spectra_schema_accepts_only_joint_sedfit_backend(tmp_path):
