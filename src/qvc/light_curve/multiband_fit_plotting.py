@@ -2657,6 +2657,20 @@ def save_structure_function_plot(diagnostic, data, show=False, filename_suffix=N
     plt.close(fig)
 
 
+def combined_plot_filename(data, filename_suffix=None):
+    """Name a combined light-curve PDF like the corresponding spectral figures."""
+    sdss_name = data.get("sdss_name")
+    if isinstance(sdss_name, bytes):
+        sdss_name = sdss_name.decode("utf-8")
+    identifier = str(sdss_name).strip() if sdss_name is not None else ""
+    if not identifier:
+        identifier = str(data["object_id"])
+    stem = f'z{float(data["z"]):.3f}_{identifier}_light_curve'
+    if filename_suffix is not None:
+        stem += f"_{filename_suffix}"
+    return stem + ".pdf"
+
+
 def save_combined_plot(samples, model, X, y, yerr, band_idx, mags_means, survey_times,
                        data, bands=['u', 'g', 'r', 'i', 'z'], plot_psd=True, show=False,
                        time0=0.0, plot_bpl_fit=False, filename_suffix=None,
@@ -3137,8 +3151,7 @@ def save_combined_plot(samples, model, X, y, yerr, band_idx, mags_means, survey_
     # Save the plot as a PNG file
     output_dir = f"plots/multiband/{prefix}/light_curves_fits"
     os.makedirs(output_dir, exist_ok=True)
-    save_suffix = suffix if filename_suffix is None else filename_suffix
-    fpath = os.path.join(output_dir, f'{data["z"]:.1f}_{object_id}_light_curve_{save_suffix}.pdf')
+    fpath = os.path.join(output_dir, combined_plot_filename(data, filename_suffix))
     plt.savefig(fpath, dpi=600)
 
     logging.info(f"Saving figure to {fpath}")

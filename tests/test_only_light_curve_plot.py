@@ -44,13 +44,14 @@ def test_actual_plot_dispatch(only):
     class Data(dict):
         def __missing__(self, key): return 0
     context = dict(mocks, args=args, result={}, psd_break_result={},
-                   obj=Data(z=1.), obj_flat_samples_flatten_per_band={},
+                   obj=Data(z=1., sdss_name='031110.21-001015.0'), obj_flat_samples_flatten_per_band={},
                    plot_samples={}, m=None, bands=['g'], prefix='test', suffix='test',
                    BAND_POLES_BLR_VARIANT='shared_latent_band_poles_blr', oid='test')
     # Execute the try body directly so exceptions cannot be swallowed by logging.
     code = ast.Module(body=block.body[0].body, type_ignores=[])
     exec(compile(ast.fix_missing_locations(code), '<production plotting>', 'exec'), context)
     mocks['save_combined_plot'].assert_called_once()
+    assert mocks['save_combined_plot'].call_args.args[8]['sdss_name'] == '031110.21-001015.0'
     assert mocks['save_combined_plot'].call_args.kwargs['plot_psd'] is True
     assert mocks['save_combined_plot'].call_args.kwargs['plot_bpl_fit'] is True
     for name, mock in mocks.items():
@@ -65,6 +66,16 @@ def test_synthetic_combined_figure_with_psd(tmp_path, monkeypatch):
     import numpy as np
     import matplotlib.pyplot as plt
     from qvc.light_curve import multiband_fit_plotting as plotting
+    assert plotting.combined_plot_filename(
+        {"object_id": "101", "z": 1.4234, "sdss_name": "031110.21-001015.0"}
+    ) == "z1.423_031110.21-001015.0_light_curve.pdf"
+    assert plotting.combined_plot_filename(
+        {"object_id": "synthetic", "z": 1.0}
+    ) == "z1.000_synthetic_light_curve.pdf"
+    assert plotting.combined_plot_filename(
+        {"object_id": "101", "z": 1.4234, "sdss_name": b"031110.21-001015.0"},
+        filename_suffix="diagnostic",
+    ) == "z1.423_031110.21-001015.0_light_curve_diagnostic.pdf"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(plotting, 'prefix', 'only_plot_smoke')
     class Model:

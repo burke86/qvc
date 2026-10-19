@@ -304,7 +304,7 @@ def test_format_light_curve_runtime_annotation_filters_invalid_values():
     )
 
 
-def test_stone_plot_runtime_annotation_uses_all_merged_rows(monkeypatch, tmp_path):
+def test_stone_plot_omits_runtime_annotation_even_with_runtimes(monkeypatch, tmp_path):
     captured = {}
     rows = [
         _identity_row(object_id="matched", light_curve_fit_total_elapsed_sec=3600.0),
@@ -328,7 +328,7 @@ def test_stone_plot_runtime_annotation_uses_all_merged_rows(monkeypatch, tmp_pat
         tmp_path / "plots" / "stone.pdf",
     )
 
-    assert captured["figure_annotation"] == "Runtime: mean 1.5 h · p90 1.9 h"
+    assert captured.get("figure_annotation") is None
     assert captured["style"]["contour_color"] == "tab:blue"
     assert captured["style"]["contour_smoothing"] == 4.0
     assert captured["style"]["show_metric_count"] is False
@@ -359,8 +359,8 @@ def test_stone_plot_omits_runtime_annotation_for_legacy_rows(
         tmp_path / "plots" / "stone.pdf",
     )
 
-    assert captured["figure_annotation"] is None
-    assert "omitting runtime annotation" in capsys.readouterr().out
+    assert captured.get("figure_annotation") is None
+    assert "runtime annotation" not in capsys.readouterr().out
 
 
 def test_collect_light_curve_posterior_draws_preserves_pairs_and_converts_units(

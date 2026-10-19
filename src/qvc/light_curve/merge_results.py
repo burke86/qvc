@@ -883,12 +883,6 @@ def build_stone_identity_plot_data(rows, stone_fits_path=None, s82_catalog_path=
 
 
 def write_stone_sigma_tau_identity_grid(rows, output_path: str, stone_fits_path=None, s82_catalog_path=None):
-    runtime_annotation = _format_light_curve_runtime_annotation(rows)
-    if runtime_annotation is None:
-        print(
-            "WARNING: Stone comparison plot has no finite nonnegative "
-            "light_curve_fit_total_elapsed_sec values; omitting runtime annotation."
-        )
     plot_df = build_stone_identity_plot_data(
         rows,
         stone_fits_path=stone_fits_path,
@@ -927,7 +921,6 @@ def write_stone_sigma_tau_identity_grid(rows, output_path: str, stone_fits_path=
         output_path=output_path,
         sigma_limits=STONE_SIGMA_LIMITS,
         tau_limits=STONE_TAU_LIMITS,
-        figure_annotation=runtime_annotation,
         expand_limits_for_errorbars=True,
         style={
             "contour_color": "tab:blue",

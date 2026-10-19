@@ -6244,7 +6244,7 @@ def main():
 
             if args.plot:
                 try:
-                    plot_data = result | psd_break_result
+                    plot_data = result | psd_break_result | {"sdss_name": obj.get("sdss_name")}
                     if not args.disable_trace_plot:
                         plot_mcmc_traces(obj_flat_samples_flatten_per_band, obj)
                     if not args.disable_combined_plot:
