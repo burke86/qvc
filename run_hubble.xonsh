@@ -1,5 +1,6 @@
 #!/usr/bin/env xonsh
 
+import math
 from pathlib import Path
 
 # Optional interactive prompt customization is intentionally omitted so this
@@ -33,11 +34,19 @@ completeness_z_bin_width = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_Z_
 completeness_smooth_sigma_mag = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_SMOOTH_SIGMA_MAG"]
 completeness_smooth_sigma_z = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_SMOOTH_SIGMA_Z"]
 
-# Speed options: fastest, quick, medium, standard, production.
-# Set QVC_HUBBLE_SPEED=medium for 100 initial live points, batches of 50,
-# and a 2,000 effective-sample target (Dynesty). Runtime is model-dependent.
+# Speed options: fastest, quicker, quick, medium, standard, production.
+# Runtime is model-dependent.
 # Environment overrides support isolated, reproducible cut-search members.
-speed = __xonsh__.env.get("QVC_HUBBLE_SPEED", "standard")
+speed = __xonsh__.env.get("QVC_HUBBLE_SPEED", "quick")
+cosmo_models = str(__xonsh__.env.get(
+    "QVC_HUBBLE_COSMO_MODELS", "Flatw0waCDM FlatLambdaCDM FlatwCDM"
+)).split()
+if not cosmo_models or any(
+    model not in {"FlatLambdaCDM", "FlatwCDM", "Flatw0waCDM"}
+    for model in cosmo_models
+):
+    raise ValueError("QVC_HUBBLE_COSMO_MODELS must list supported flat cosmologies")
+
 
 magnitude_convention = __xonsh__.env.get("QVC_HUBBLE_MAGNITUDE_CONVENTION", "dereddened")
 completeness_magnitude = __xonsh__.env.get(
@@ -68,6 +77,51 @@ if light_curve_uncertainty_mode not in {"covariance", "posterior-draws"}:
         "QVC_HUBBLE_LIGHT_CURVE_UNCERTAINTY_MODE must be covariance or "
         f"posterior-draws; got {light_curve_uncertainty_mode!r}."
     )
+bright_subsample_margin_raw = str(
+    __xonsh__.env.get("QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN", "0.2")
+).strip()
+try:
+    bright_subsample_margin = float(bright_subsample_margin_raw)
+except ValueError as exc:
+    raise ValueError(
+        "QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN must be a finite, nonnegative number; "
+        f"got {bright_subsample_margin_raw!r}."
+    ) from exc
+if not math.isfinite(bright_subsample_margin) or bright_subsample_margin < 0.0:
+    raise ValueError(
+        "QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN must be a finite, nonnegative number; "
+        f"got {bright_subsample_margin_raw!r}."
+    )
+bright_subsample_min_raw = str(
+    __xonsh__.env.get("QVC_HUBBLE_BRIGHT_SUBSAMPLE_COMPLETENESS_MIN", "0.1")
+).strip().lower()
+if bright_subsample_min_raw == "none":
+    bright_subsample_args = []
+else:
+    try:
+        bright_subsample_min = float(bright_subsample_min_raw)
+    except ValueError as exc:
+        raise ValueError(
+            "QVC_HUBBLE_BRIGHT_SUBSAMPLE_COMPLETENESS_MIN must be in (0, 1] or none."
+        ) from exc
+    if not math.isfinite(bright_subsample_min) or not 0.0 < bright_subsample_min <= 1.0:
+        raise ValueError(
+            "QVC_HUBBLE_BRIGHT_SUBSAMPLE_COMPLETENESS_MIN must be in (0, 1] or none."
+        )
+    bright_subsample_args = [
+        "--bright-subsample-completeness-min", f"{bright_subsample_min:g}",
+        "--bright-subsample-margin", f"{bright_subsample_margin:g}",
+    ]
+z_min_raw = str(__xonsh__.env.get("QVC_HUBBLE_Z_MIN", "0.44")).strip()
+try:
+    z_min = float(z_min_raw)
+except ValueError as exc:
+    raise ValueError("QVC_HUBBLE_Z_MIN must be finite and below 3.16.") from exc
+if not math.isfinite(z_min) or not 0.0 <= z_min < 3.16:
+    raise ValueError("QVC_HUBBLE_Z_MIN must be finite and in [0, 3.16).")
+result_prefix = str(__xonsh__.env.get("QVC_HUBBLE_RESULT_PREFIX", "fiducial")).strip()
+if not result_prefix:
+    raise ValueError("QVC_HUBBLE_RESULT_PREFIX must not be empty.")
 
 # Hubble quality-cut thresholds. Edit the defaults here, or override any one
 # with the corresponding environment variable. Use "none" for thresholds that
@@ -78,11 +132,11 @@ cut_threshold_defaults = {
     "QVC_CUT_COMPLETENESS_MAG_2500_MIN": "17",
     "QVC_CUT_COMPLETENESS_MAG_2500_MAX": "24",
     # Tier 1: spectral/light-curve fit quality and convergence.
-    "QVC_CUT_JAXSEDFIT_JOINT_REDUCED_CHI2_MAX": "1.2", # they all pass
-    "QVC_CUT_SED_REDUCED_CHI2_MAX": "1.5",
     "QVC_CUT_SPECTROSCOPY_REDUCED_CHI2_MAX": "1.1",
-    "QVC_CUT_LOO_CHI2_EFF_MAX": "1.0",
-    "QVC_CUT_SPECTRAL_RHAT_MAX": "1.1",
+    "QVC_CUT_SED_REDUCED_CHI2_MAX": "1.3",
+    "QVC_CUT_JAXSEDFIT_JOINT_REDUCED_CHI2_MAX": "1.2", # they all pass
+    "QVC_CUT_LOO_CHI2_EFF_MAX": "1.05",
+    "QVC_CUT_SPECTRAL_RHAT_MAX": "1.05",
     "QVC_CUT_LIGHT_CURVE_RHAT_MAX": "1.05",
     "QVC_CUT_NUM_DIVERGENCES_MAX": "0",
     # Tier 2: fitted-parameter and science-quality cuts.
@@ -90,6 +144,7 @@ cut_threshold_defaults = {
     "QVC_CUT_T_RF_LENGTH_MIN": "none",
     "QVC_CUT_LIGHT_CURVE_N_POINTS_MIN": "none",
     "QVC_CUT_SN_MEDIAN_ALL_MIN": "3",
+    "QVC_CUT_VARIABILITY_CHI_SQ_RED_G_MIN": "20",
     "QVC_CUT_ETA_SIGMA_KL_MIN": "none",
     "QVC_CUT_LOG_TAU_UV_RF_MAX": "none",
     "QVC_CUT_T_RF_OVER_TAU_UV_RF_MIN": "none",
@@ -97,6 +152,7 @@ cut_threshold_defaults = {
     "QVC_CUT_F_BC_3000_MAX": "none",
     "QVC_CUT_F_FE_UV_3000_MAX": "none",
     "QVC_CUT_F_HOST_2500_PSF_MAX": "none",
+    "QVC_CUT_FRAC_AGN_5100_MIN": "none",
     "QVC_CUT_A_2500_TOTAL_MAX": "none",
     "QVC_CUT_EBV_GAL_PLUS_EBV_AGN_MAX": "none",
     "QVC_CUT_LOW_L2500_FHOST_LOG_L_MAX": "none",
@@ -132,7 +188,10 @@ else:
 #spectra_fit_csv = "results/data/jaxqsofit/aug29_0315pm_spectrafit_dc35f3a_chisqgt20_N8000_nested_fhostpsf_delayedburst_galexauto_fixed.h5"
 #
 #spectra_fit_csv = "results/data/jaxqsofit/aug31_1159pm_spectrafit_af65bbe_chisqgt20_N8000_nested_fhostpsf_delayedburst_morebands_bal.h5"
-spectra_fit_csv = "results/data/jaxqsofit/aug31_w500s500_d01c034.h5"
+spectra_fit_csv = __xonsh__.env.get(
+    "QVC_HUBBLE_SPECTRA_FIT_FILE",
+    "results/data/jaxqsofit/aug31_w500s500_d01c034.h5",
+)
 
 #spectra_fit_csv = "results/data/jaxqsofit/aug31_1159pm_spectrafit_af65bbe_chisqgt20_N8000_nested_fhostpsf_delayedburst_morebands_bal_intersection.h5"
 #spectra_fit_csv = "results/data/jaxqsofit/sep03_1231am_spectrafit_d01c034_chisqgt20_N8000_nested_fhostpsf_delayedburst_morebands_bal_w2000s1000_intersection.h5"
@@ -157,11 +216,22 @@ spectra_fit_csv = "results/data/jaxqsofit/aug31_w500s500_d01c034.h5"
 
 #h5_file = "results/data/sep08_1244pm_chisq_slb_faster_etamodifiedtight_n8000excn2000_iters3disk3_svi10000lr0003w500s250_specaug31w500s250_83cb31d_chisq.h5"
 
-h5_file = "results/data/sep09_1033am_chisq_slb_faster_etamodifiedtight_nallexcn8000and2000_iters3disk3_svi10000lr0003w500s250_specaug31w500s250_83cb31d_chisq.h5"
-
+#h5_file = "results/data/sep09_1033am_chisq_slb_faster_etamodifiedtight_nallexcn8000and2000_iters3disk3_svi10000lr0003w500s250_specaug31w500s250_83cb31d_chisq.h5"
+h5_file = __xonsh__.env.get(
+    "QVC_HUBBLE_AGN_FILE",
+    "results/data/sep14_1232pm_chisq_slb_faster_etamodified_iters3disk3_svi10000lr0003w1000s500_specaug31w500s500_83cb31d_chisq.h5",
+)
+completeness_sim_file = __xonsh__.env.get(
+    "QVC_HUBBLE_COMPLETENESS_SIM_FILE", ""
+)
+completeness_sim_args = (
+    ["--completeness_sim_file", completeness_sim_file]
+    if completeness_sim_file
+    else []
+)
 $PREFIX = __xonsh__.env.get(
     "QVC_HUBBLE_PREFIX",
-    f"sep14a_tau13cut_slb_bsc01m02_merrnone_magcut1724_cs02020103_chisq20_wang_specw500s500_h5sep091033_tier{cut_tier}_{speed}",
+    f"sep25a_etamodified_node_slb_bsc01m02_sed13loo105rhat105_cs02020103_chisq20_wang_specw500s500_h5sep141232_tier{cut_tier}_{speed}",
 )
 
 prefix = $PREFIX
@@ -169,14 +239,16 @@ echo "Running hubble_fit.py and PREFIX=" $PREFIX
 echo "Using cumulative Hubble cut tier:" @(cut_tier)
 echo "Using light-curve uncertainty mode:" @(light_curve_uncertainty_mode)
 echo "Using completeness magnitude support mode:" @(completeness_magnitude_support_mode)
+echo "Using bright-subsample margin:" @(f"{bright_subsample_margin:g}")
+echo "Using bright-subsample completeness minimum:" @(bright_subsample_min_raw)
 echo "Using Hubble cut thresholds:"
 for name, value in cut_thresholds.items():
     echo "  " @(name) "=" @(value)
 
 python -m qvc.hubble.hubble_fit \
     @(resume_args) \
-    --bright-subsample-completeness-min 0.1 --bright-subsample-margin 0.2 \
-    --cosmo_models FlatLambdaCDM Flatw0waCDM \
+    @(bright_subsample_args) \
+    --cosmo_models @(cosmo_models) \
     --run single \
     --speed @(speed) \
     --spectra_fit_csv @(spectra_fit_csv) \
@@ -184,20 +256,25 @@ python -m qvc.hubble.hubble_fit \
     --completeness_magnitude @(completeness_magnitude) \
     --completeness-magnitude-support-mode @(completeness_magnitude_support_mode) \
     --completeness_lf_model @(completeness_lf_model) \
+    @(completeness_sim_args) \
     --completeness-mag-bin-width @(completeness_mag_bin_width) \
     --completeness-z-bin-width @(completeness_z_bin_width) \
     --completeness-smooth-sigma-mag @(completeness_smooth_sigma_mag) \
     --completeness-smooth-sigma-z @(completeness_smooth_sigma_z) \
     --light-curve-uncertainty-mode @(light_curve_uncertainty_mode) \
     --cut-tier @(cut_tier) \
-    --result_prefix "fiducial" \
-    --z_range 0.44 3.16 \
+    --result_prefix @(result_prefix) \
+    --z_range @(f"{z_min:g}") 3.16 \
     --prefix @(prefix) \
     --disable_sigma_clip_pass \
     --sigma_clip_threshold 3.0 \
     --prior-profile centered_lcdm \
     --skip-debiased-residual-plot \
+    --early-de-guard \
+    --minimal-plots \
     @(h5_file)
+
+#    --minimal-plots \
 
 #    --bright-subsample-completeness-min 0.1 --bright-subsample-margin 0.25 \
 
@@ -207,4 +284,4 @@ python -m qvc.hubble.hubble_fit \
 # QVC_HUBBLE_CUT_TIER meanings (tiers are cumulative):
 #   none: no tiered cuts; 0: eligibility only; 1: tiers 0+1; 2: tiers 0+1+2
 
-bash scripts/copy_paper_assets.sh --speed @(speed) --fiducial-dir @(str(Path("plots/hubble") / prefix))
+#bash scripts/copy_paper_assets.sh --speed @(speed) --fiducial-dir @(str(Path("plots/hubble") / prefix))

@@ -254,7 +254,7 @@ T_RF_OVER_TAU_UV_RF_COLUMN = "t_rf_over_tau_uv_rf"
 T_RF_OVER_TAU_UV_RF_MIN = _cut_env_float(
     "QVC_CUT_T_RF_OVER_TAU_UV_RF_MIN", None
 )
-FRAC_AGN_5100_MIN = None
+FRAC_AGN_5100_MIN = _cut_env_float("QVC_CUT_FRAC_AGN_5100_MIN", None)
 APPARENT_MAG_2500_ERR_MAX = _cut_env_float(
     "QVC_CUT_APPARENT_MAG_2500_ERR_MAX", None
 )

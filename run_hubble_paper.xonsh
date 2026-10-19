@@ -1,6 +1,7 @@
 #!/usr/bin/env xonsh
 
 from pathlib import Path
+import math
 
 # Optional interactive prompt customization is intentionally omitted so this
 # batch runner does not depend on the external ``cmd_done`` xontrib.
@@ -17,7 +18,7 @@ $MPLCONFIGDIR = "/tmp/qvc-matplotlib"
 $QVC_XRAY_CATALOG = __xonsh__.env.get(
     "QVC_XRAY_CATALOG",
     str(
-        Path(__file__).resolve().parent
+        Path.cwd()
         / "results"
         / "diagnostics"
         / "chandra_precut_sep13"
@@ -47,11 +48,25 @@ completeness_z_bin_width = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_Z_
 completeness_smooth_sigma_mag = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_SMOOTH_SIGMA_MAG"]
 completeness_smooth_sigma_z = completeness_grid_options["QVC_HUBBLE_COMPLETENESS_SMOOTH_SIGMA_Z"]
 
-# Speed options: fastest, quick, medium, standard, production.
-# Set QVC_HUBBLE_SPEED=medium for 100 initial live points, batches of 50,
-# and a 2,000 effective-sample target (Dynesty). Runtime is model-dependent.
+# Speed options: fastest, quicker, quick, medium, standard, production.
+# Medium uses 175 initial live points, batches of 75, and a 7,500
+# effective-sample target (Dynesty). Runtime is model-dependent.
 # Environment overrides support isolated, reproducible cut-search members.
-speed = __xonsh__.env.get("QVC_HUBBLE_SPEED", "production")
+speed = __xonsh__.env.get("QVC_HUBBLE_SPEED", "standard")
+cosmo_models = str(__xonsh__.env.get(
+    "QVC_HUBBLE_COSMO_MODELS", "FlatLambdaCDM FlatwCDM Flatw0waCDM"
+)).split()
+if not cosmo_models or any(
+    model not in {"FlatLambdaCDM", "FlatwCDM", "Flatw0waCDM"}
+    for model in cosmo_models
+):
+    raise ValueError("QVC_HUBBLE_COSMO_MODELS must list supported flat cosmologies")
+run_mode = str(__xonsh__.env.get("QVC_HUBBLE_RUN_MODE", "full")).strip().lower()
+if run_mode not in {"full", "single"}:
+    raise ValueError(
+        "QVC_HUBBLE_RUN_MODE must be full or single; "
+        f"got {run_mode!r}."
+    )
 
 magnitude_convention = __xonsh__.env.get("QVC_HUBBLE_MAGNITUDE_CONVENTION", "dereddened")
 completeness_magnitude = __xonsh__.env.get(
@@ -68,6 +83,21 @@ if completeness_magnitude_support_mode not in {"tails", "hard-cut"}:
 completeness_lf_model = __xonsh__.env.get(
     "QVC_HUBBLE_COMPLETENESS_LF_MODEL", "wang2026_type1_lade_a"
 )
+bright_subsample_margin_raw = str(
+    __xonsh__.env.get("QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN", "0.2")
+).strip()
+try:
+    bright_subsample_margin = float(bright_subsample_margin_raw)
+except ValueError as exc:
+    raise ValueError(
+        "QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN must be a finite nonnegative number; "
+        f"got {bright_subsample_margin_raw!r}."
+    ) from exc
+if not math.isfinite(bright_subsample_margin) or bright_subsample_margin < 0.0:
+    raise ValueError(
+        "QVC_HUBBLE_BRIGHT_SUBSAMPLE_MARGIN must be a finite nonnegative number; "
+        f"got {bright_subsample_margin_raw!r}."
+    )
 cut_tier = str(__xonsh__.env.get("QVC_HUBBLE_CUT_TIER", "2")).strip().lower()
 if cut_tier not in {"none", "0", "1", "2"}:
     raise ValueError(
@@ -83,6 +113,16 @@ if light_curve_uncertainty_mode not in {"covariance", "posterior-draws"}:
         f"posterior-draws; got {light_curve_uncertainty_mode!r}."
     )
 
+skip_paper_asset_copy_raw = str(
+    __xonsh__.env.get("QVC_HUBBLE_SKIP_PAPER_ASSET_COPY", "0")
+).strip().lower()
+if skip_paper_asset_copy_raw not in {"0", "1", "false", "true", "no", "yes"}:
+    raise ValueError(
+        "QVC_HUBBLE_SKIP_PAPER_ASSET_COPY must be a boolean value; "
+        f"got {skip_paper_asset_copy_raw!r}."
+    )
+skip_paper_asset_copy = skip_paper_asset_copy_raw in {"1", "true", "yes"}
+
 # Hubble quality-cut thresholds. Edit the defaults here, or override any one
 # with the corresponding environment variable. Use "none" for thresholds that
 # are optional; the Tier 1 chi-square and R-hat limits must stay numeric.
@@ -93,10 +133,10 @@ cut_threshold_defaults = {
     "QVC_CUT_COMPLETENESS_MAG_2500_MAX": "24",
     # Tier 1: spectral/light-curve fit quality and convergence.
     "QVC_CUT_JAXSEDFIT_JOINT_REDUCED_CHI2_MAX": "1.2", # they all pass
-    "QVC_CUT_SED_REDUCED_CHI2_MAX": "1.5",
+    "QVC_CUT_SED_REDUCED_CHI2_MAX": "1.3",
     "QVC_CUT_SPECTROSCOPY_REDUCED_CHI2_MAX": "1.1",
-    "QVC_CUT_LOO_CHI2_EFF_MAX": "1.0",
-    "QVC_CUT_SPECTRAL_RHAT_MAX": "1.1",
+    "QVC_CUT_LOO_CHI2_EFF_MAX": "1.05",
+    "QVC_CUT_SPECTRAL_RHAT_MAX": "1.05",
     "QVC_CUT_LIGHT_CURVE_RHAT_MAX": "1.05",
     "QVC_CUT_NUM_DIVERGENCES_MAX": "0",
     # Tier 2: fitted-parameter and science-quality cuts.
@@ -104,6 +144,7 @@ cut_threshold_defaults = {
     "QVC_CUT_T_RF_LENGTH_MIN": "none",
     "QVC_CUT_LIGHT_CURVE_N_POINTS_MIN": "none",
     "QVC_CUT_SN_MEDIAN_ALL_MIN": "3",
+    "QVC_CUT_VARIABILITY_CHI_SQ_RED_G_MIN": "20",
     "QVC_CUT_ETA_SIGMA_KL_MIN": "none",
     "QVC_CUT_LOG_TAU_UV_RF_MAX": "none",
     "QVC_CUT_T_RF_OVER_TAU_UV_RF_MIN": "none",
@@ -111,6 +152,7 @@ cut_threshold_defaults = {
     "QVC_CUT_F_BC_3000_MAX": "none",
     "QVC_CUT_F_FE_UV_3000_MAX": "none",
     "QVC_CUT_F_HOST_2500_PSF_MAX": "none",
+    "QVC_CUT_FRAC_AGN_5100_MIN": "none",
     "QVC_CUT_A_2500_TOTAL_MAX": "none",
     "QVC_CUT_EBV_GAL_PLUS_EBV_AGN_MAX": "none",
     "QVC_CUT_LOW_L2500_FHOST_LOG_L_MAX": "none",
@@ -122,34 +164,44 @@ for name, default in cut_threshold_defaults.items():
     __xonsh__.env[name] = value
     cut_thresholds[name] = value
 
-spectra_fit_csv = "results/data/jaxqsofit/aug31_w500s500_d01c034.h5"
-h5_file = "results/data/sep09_1033am_chisq_slb_faster_etamodifiedtight_nallexcn8000and2000_iters3disk3_svi10000lr0003w500s250_specaug31w500s250_83cb31d_chisq.h5"
+spectra_fit_csv = __xonsh__.env.get(
+    "QVC_HUBBLE_SPECTRA_H5",
+    "results/data/spectra_data.h5",
+)
+h5_file = __xonsh__.env.get(
+    "QVC_HUBBLE_LIGHT_CURVE_H5",
+    "results/data/light_curve_data.h5",
+)
 
 fiducial_prefix = __xonsh__.env.get(
     "QVC_HUBBLE_PREFIX",
-    f"sep13a_wawider_paper_bcsm0102_{cut_tier}_{speed}",
+    "fiducial",
 )
 
-restricted_prefix = f"{fiducial_prefix}_restricted"
+restricted_prefix = __xonsh__.env.get("QVC_HUBBLE_RESTRICTED_PREFIX", "restricted")
 
 echo "Using cumulative Hubble cut tier:" @(cut_tier)
 echo "Using light-curve uncertainty mode:" @(light_curve_uncertainty_mode)
 echo "Using completeness magnitude support mode:" @(completeness_magnitude_support_mode)
+echo "Using bright-subsample margin:" @(f"{bright_subsample_margin:g}")
 echo "Using Hubble cut thresholds:"
 for name, value in cut_thresholds.items():
     echo "  " @(name) "=" @(value)
 
-# Both samples share the same science settings; only their redshift limits differ.
+# Both samples use fixed sigma=0.2 mag and rest-frame tau=200 days pivots.
+# Separate sample provenance is retained; incompatible older checkpoints must not resume.
 for result_prefix, prefix, z_min in (
     ("fiducial", fiducial_prefix, "0.44"),
-    ("restricted", restricted_prefix, "1.0"),
+    ("restricted", restricted_prefix, "0.7"),
 ):
     $PREFIX = prefix
     echo "Running hubble_fit.py and PREFIX=" $PREFIX
     python -m qvc.hubble.hubble_fit \
-        --bright-subsample-completeness-min 0.1 --bright-subsample-margin 0.2 \
-        --cosmo_models FlatLambdaCDM FlatwCDM Flatw0waCDM \
-        --run full \
+        --resume \
+        --agn-sigma-pivot 0.2 --agn-tau-pivot 200 \
+        --bright-subsample-completeness-min 0.1 --bright-subsample-margin @(f"{bright_subsample_margin:g}") \
+        --cosmo_models @(cosmo_models) \
+        --run @(run_mode) \
         --speed @(speed) \
         --spectra_fit_csv @(spectra_fit_csv) \
         --magnitude-convention @(magnitude_convention) \
@@ -170,9 +222,13 @@ for result_prefix, prefix, z_min in (
         --prior-profile centered_lcdm \
         --plot-completeness \
         --skip-debiased-residual-plot \
+        --early-de-guard \
         @(h5_file)
 
-bash scripts/copy_paper_assets.sh \
-    --speed @(speed) \
-    --fiducial-dir @(str(Path("plots/hubble") / fiducial_prefix)) \
-    --restricted-dir @(str(Path("plots/hubble") / restricted_prefix))
+if skip_paper_asset_copy:
+    echo "Skipping paper asset copy for exploratory run."
+else:
+    bash scripts/copy_paper_assets.sh \
+        --speed @(speed) \
+        --fiducial-dir @(str(Path("plots/hubble") / fiducial_prefix)) \
+        --restricted-dir @(str(Path("plots/hubble") / restricted_prefix))
