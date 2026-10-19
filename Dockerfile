@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/qvc
 
 COPY pyproject.toml README.md LICENSE ./
+COPY run_hubble_paper.xonsh ./
 COPY src ./src
 COPY scripts ./scripts
 
@@ -38,4 +39,4 @@ WORKDIR /work/qvc-demo
 VOLUME ["/work/qvc-demo"]
 
 ENTRYPOINT ["/opt/qvc/scripts/docker_entrypoint.sh"]
-CMD ["all"]
+CMD ["hubble"]

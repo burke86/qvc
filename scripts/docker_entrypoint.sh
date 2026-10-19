@@ -9,7 +9,7 @@ export QVC_PLOTS_DIR="${QVC_PLOTS_DIR:-${QVC_WORKDIR}/plots}"
 export QVC_DUSTMAPS_DIR="${QVC_DUSTMAPS_DIR:-${QVC_WORKDIR}/.dustmaps}"
 
 if [[ $# -eq 0 ]]; then
-  exec "${QVC_CODE_DIR}/scripts/run_demo.sh" all
+  exec "${QVC_CODE_DIR}/scripts/run_demo.sh" hubble
 fi
 
 exec "${QVC_CODE_DIR}/scripts/run_demo.sh" "$@"

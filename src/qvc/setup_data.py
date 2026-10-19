@@ -1,5 +1,6 @@
 import argparse
 import gzip
+import hashlib
 import os
 import shutil
 import tarfile
@@ -7,6 +8,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import gdown
@@ -17,6 +19,73 @@ from tqdm import tqdm
 init(autoreset=True)
 
 DUSTMAPS_SENTINEL = ("sfd", "SFD_dust_4096_ngp.fits")
+CSC_ENDPOINT = "https://cda.cfa.harvard.edu/csc21tap/sync"
+CSC_CATALOG = Path("results/diagnostics/chandra_precut_sep13/csc21_region_download.vot")
+CSC_COLUMNS = (
+    "name", "ra", "dec", "err_ellipse_r0", "err_ellipse_r1", "err_ellipse_ang",
+    "significance", "likelihood_class", "conf_flag", "sat_src_flag", "streak_src_flag",
+    "flux_aper_b", "flux_aper_lolim_b", "flux_aper_hilim_b",
+    "flux_aper_w", "flux_aper_lolim_w", "flux_aper_hilim_w",
+    "flux_aper_avg_b", "flux_aper_avg_lolim_b", "flux_aper_avg_hilim_b",
+    "flux_aper_avg_w", "flux_aper_avg_lolim_w", "flux_aper_avg_hilim_w",
+)
+# Preserve the paper's full regional catalog; do not prefilter using the older
+# one-arcsecond matching rule. Hubble analysis uses the CSC error ellipses.
+CSC_QUERY = (
+    "SELECT " + ", ".join(f"m.{column}" for column in CSC_COLUMNS)
+    + " FROM csc21.master_source m WHERE m.dec BETWEEN -1.251 AND 1.251"
+)
+
+
+def validate_csc_catalog(path):
+    from astropy.io.votable import parse
+    import numpy as np
+
+    statuses = [
+        item.attrib.get("value") for item in ET.parse(path).iter()
+        if item.tag.rsplit("}", 1)[-1] == "INFO"
+        and item.attrib.get("name") == "QUERY_STATUS"
+    ]
+    if not statuses or any(status != "OK" for status in statuses):
+        raise ValueError(f"CSC TAP query failed or was truncated: {statuses}")
+    table = parse(path).get_first_table().to_table(use_names_over_ids=True)
+    missing = set(CSC_COLUMNS) - set(table.colnames)
+    if missing or not len(table):
+        raise ValueError(f"Invalid CSC catalog: {len(table)} rows, missing columns {sorted(missing)}")
+    for column in ("ra", "dec"):
+        values = np.ma.asarray(table[column])
+        if np.any(np.ma.getmaskarray(values)) or not np.all(np.isfinite(values)):
+            raise ValueError(f"Invalid CSC coordinates in {column}")
+    return len(table)
+
+
+def fetch_csc():
+    """Download the paper's CSC 2.1 region as a validated, ready-to-use VOTable."""
+    destination = CSC_CATALOG
+    if destination.exists():
+        count = validate_csc_catalog(destination)
+        print(f"{Fore.YELLOW}SKIP {Fore.RESET} Valid CSC catalog: {destination} ({count} sources)")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    query = urllib.parse.urlencode({
+        "REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "votable",
+        "MAXREC": "1000000", "QUERY": CSC_QUERY,
+    })
+    path, _ = download_from_http(f"{CSC_ENDPOINT}?{query}", filename=destination.name)
+    try:
+        count = validate_csc_catalog(path)
+        # Stage beside the destination so installation is atomic across filesystems.
+        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as handle:
+            staged = Path(handle.name)
+        try:
+            shutil.copyfile(path, staged)
+            staged.replace(destination)
+        finally:
+            staged.unlink(missing_ok=True)
+        destination.with_suffix(".adql").write_text(CSC_QUERY + "\n")
+        print(f"{Fore.GREEN}OK   {Fore.RESET} CSC catalog: {destination} ({count} sources)")
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def fetch_dustmaps():
@@ -41,6 +110,7 @@ def fetch_dustmaps():
 
 COMMANDS = {
     "fetch_dustmaps": fetch_dustmaps,
+    "fetch_csc": fetch_csc,
 }
 
 DEFAULT_STEPS = [
@@ -52,15 +122,17 @@ DEFAULT_STEPS = [
     },
     {
         "type": "download",
-        "url": "https://drive.google.com/file/d/1PUVRL7AlyG_15wKpkpF5wR-uYpCS8q11/view?usp=sharing",
+        "url": "https://zenodo.org/records/23021880/files/light_curve_data.h5?download=1",
         "folder": "results/data",
-        "filename": "lc_data_all.h5",
+        "filename": "light_curve_data.h5",
+        "md5": "92eaa1c649e8380cdf1190b11db6cfcb",
     },
     {
         "type": "download",
-        "url": "https://drive.google.com/file/d/1VtccnFl5WIan4pZHfyia6KjhgkrCAHrt/view?usp=sharing",
+        "url": "https://zenodo.org/records/23021880/files/spectra_data.h5?download=1",
         "folder": "results/data",
-        "filename": "spectra_data_all.csv",
+        "filename": "spectra_data.h5",
+        "md5": "6ce97a192dc077929a1de73059e7a8a9",
     },
     {
         "type": "download",
@@ -70,8 +142,10 @@ DEFAULT_STEPS = [
     },
     {
         "type": "download",
-        "url": "https://drive.google.com/file/d/1QNOzH3_gmM1mCQezQJdW557MpUQdc2UW/view?usp=sharing",
+        "url": "https://zenodo.org/records/23021880/files/hubble_posteriors.zip?download=1",
         "folder": "results/",
+        "filename": "hubble_posteriors.zip",
+        "md5": "772a6904baeb23dbf3eef16a406563e8",
     },
     {
         "type": "download",
@@ -103,6 +177,7 @@ DEFAULT_STEPS = [
         "filename": "Pantheon+SH0ES.dat",
     },
     
+    {"type": "command", "name": "fetch_csc"},
     {"type": "command", "name": "fetch_dustmaps"},
 ]
 
@@ -128,6 +203,24 @@ APPENDIX_STEPS = [
     #     "filename": "specObj-dr17.fits",
     # }
 ]
+
+# The paper resume needs the published fit summaries/checkpoints and the two
+# external Pantheon/CSC inputs, not the raw fitting catalogs or the old Shen mock.
+PAPER_STEPS = [
+    step for step in DEFAULT_STEPS
+    if "zenodo.org/records/23021880/" in step.get("url", "")
+    or step.get("filename", "").startswith("Pantheon+SH0ES")
+    or step.get("name") == "fetch_csc"
+]
+
+
+def verify_md5(path, expected):
+    if expected is None:
+        return
+    with open(path, "rb") as stream:
+        actual = hashlib.file_digest(stream, "md5").hexdigest()
+    if actual != expected:
+        raise ValueError(f"MD5 mismatch for {path}: expected {expected}, got {actual}")
 
 
 def is_google_drive_url(url):
@@ -184,6 +277,8 @@ def download_from_http(url, filename=None):
         raise ValueError(f"Unsupported URL scheme for non-Google download: {parsed.scheme or '<missing>'}")
 
     with urllib.request.urlopen(url) as response:
+        if response.info().get_content_type() == "text/html":
+            raise ValueError(f"Expected a data file but received an HTML page from {url}")
         resolved_name = filename or infer_filename_from_response(response) or infer_filename_from_url(url)
         print(f"{Fore.BLUE}GET  {Fore.RESET} Fetching via HTTP: {resolved_name}...")
         headers = getattr(response, "headers", None)
@@ -311,7 +406,7 @@ def normalize_step(step):
     raise TypeError(f"Unsupported step type: {type(step).__name__}")
 
 
-def download_and_extract(url, folder, filename=None, skip_if_exists=None):
+def download_and_extract(url, folder, filename=None, skip_if_exists=None, md5=None):
     """
     Download from Google Drive or generic HTTP(S) and extract supported archives.
     Skips download if filename or an extracted sentinel already exists.
@@ -321,6 +416,15 @@ def download_and_extract(url, folder, filename=None, skip_if_exists=None):
     target_path = resolve_target_path(folder, filename)
     skip_path = resolve_skip_path(folder, skip_if_exists)
     if target_path and os.path.exists(target_path):
+        verify_md5(target_path, md5)
+        if is_zip_archive(filename) or is_tar_archive(filename) or is_gzip_archive(filename):
+            # A cached archive is not evidence that its contents were installed.
+            # Extract a temporary copy so the user's cached archive is retained.
+            with tempfile.NamedTemporaryFile(delete=False) as handle:
+                cached_copy = handle.name
+            shutil.copyfile(target_path, cached_copy)
+            extract_archive(cached_copy, folder, filename)
+            return
         print(f"{Fore.YELLOW}SKIP {Fore.RESET} {filename} already exists in {folder}. Skipping.")
         return
     if skip_path and os.path.exists(skip_path):
@@ -339,11 +443,13 @@ def download_and_extract(url, folder, filename=None, skip_if_exists=None):
             return
 
         archive_name = resolved_name or os.path.basename(path)
+        verify_md5(path, md5)
         if not extract_archive(path, folder, archive_name):
             save_regular_file(path, folder, filename=filename or resolved_name)
 
     except Exception as e:
         print(f"{Fore.RED}ERR  {Fore.RESET} Processing failed: {e}")
+        raise
 
 
 def run_command_step(name):
@@ -366,6 +472,7 @@ def run_step(step):
             normalized["folder"],
             normalized.get("filename"),
             normalized.get("skip_if_exists"),
+            normalized.get("md5"),
         )
         return
 
@@ -378,7 +485,13 @@ def run_step(step):
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Download demo or appendix datasets used by QVC.")
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--paper",
+        action="store_true",
+        help="Download the published Hubble resume inputs and external Pantheon/CSC data.",
+    )
+    selection.add_argument(
         "--appendix",
         action="store_true",
         help="Download only the appendix MacLeod 2010 dataset under data/MacLeod2010.",
@@ -387,6 +500,8 @@ def build_parser():
 
 
 def get_steps(args):
+    if args.paper:
+        return PAPER_STEPS
     if args.appendix:
         return APPENDIX_STEPS
     return DEFAULT_STEPS

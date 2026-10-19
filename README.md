@@ -3,10 +3,10 @@
 This repository provides end-to-end tooling for:
 
 1. Multi-band AGN light-curve fitting
-2. Spectral fitting with PyQSOFit
+2. Spectral fitting with JAXQSOFit
 3. Hubble-diagram fitting and figure generation
 
-The demo workflow downloads the needed data, fits one light curve, fits one spectrum, and recreates the publication Hubble runs with saved posteriors.
+The quick-start workflow downloads the published Zenodo summaries and recreates the Hubble runs with saved posteriors. Optional light-curve and spectrum refitting requires additional raw S82 inputs (see below).
 
 The resulting figures are found under `docker-workdir/plots/` when run with Docker, or under `plots/` for a local run.
 
@@ -27,12 +27,12 @@ docker build -t qvc-demo .
 mkdir -p "$(pwd)/docker-workdir"
 ```
 
-Run the full replication workflow:
+Run the published Hubble replication workflow:
 
 ```bash
 docker run --rm \
   -v "$(pwd)/docker-workdir:/work/qvc-demo" \
-  qvc-demo all
+  qvc-demo hubble
 ```
 
 Available commands:
@@ -45,7 +45,9 @@ spectra
 hubble
 ```
 
-The Docker setup step downloads the data automatically into `docker-workdir`, including the generated completeness mock used by the Hubble stage. Generated `results/`, `plots/`, and dustmaps files are written there as well.
+The `hubble` command runs `setup_data --paper` automatically inside `docker-workdir`, then strictly resumes the published checkpoints. It generates the Wang completeness mock locally and skips copying unrelated manuscript assets. Results and plots remain in the mounted directory. The image defaults to `hubble` when no command is supplied.
+
+`all`, `light-curve`, and `spectra` additionally require the raw S82 files described below. Place them in `docker-workdir/data/S82/` before using those commands. Full `setup` also downloads the fitting dependencies and dustmaps into the mounted directory.
 
 ## Local Install
 
@@ -64,13 +66,13 @@ command refreshes it even when upstream has not changed its package version;
 repeat it when updating an existing environment. Catalog manifests record the
 installed revision for provenance.
 
-Run the full demo workflow:
+Run the published Hubble replication workflow:
 
 ```bash
-bash scripts/run_demo.sh all
+bash scripts/run_demo.sh hubble
 ```
 
-You can also run individual stages:
+With the raw S82 inputs installed, you can also run the fitting stages (or `all`):
 
 ```bash
 bash scripts/run_demo.sh setup
@@ -83,15 +85,62 @@ Alternatively, you may call each command directly. Note again that these command
 
 All plots and results will be generated under `plots/` and `results/`, respectively.
 
+The paper launcher (`run_hubble_paper.xonsh`) fixes both the fiducial and
+restricted samples at `--agn-sigma-pivot 0.2 --agn-tau-pivot 200` (magnitudes and
+rest-frame days). Other launchers retain sample-median pivots. Supply both options
+together with finite, positive values; they cannot be combined with
+`--disable-pivot-rounding`. Checkpoint resumes require matching pivot values and
+rules. The paper launcher resumes the published `fiducial` and `restricted`
+checkpoints; missing checkpoints fail rather than starting a new fit.
+
 ### Setup
 
-Downloads the demo inputs, cached spectrum, Hubble inputs, generated completeness mock, DSPS data, Pantheon+ files, and dustmaps data needed by the local workflow.
+Downloads the cached spectrum, DR16Q catalog, Hubble inputs, legacy completeness mock, DSPS data, Pantheon+ files, CSC catalog, and dustmaps. Raw S82 photometry is not included in this setup.
 
 Expected output: downloaded inputs under `data/`, `results/data/`, `results/cosmo/`, `results/hubble_posteriors/`, and dustmaps under `results/dustmaps/`.
 
 ```bash
 python -m qvc.setup_data
 ```
+
+For the published paper's Hubble resume only:
+
+```bash
+python -m qvc.setup_data --paper
+QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1 python -m xonsh --no-rc run_hubble_paper.xonsh
+```
+
+This downloads the checksum-verified inputs from
+[Zenodo record 23021880](https://zenodo.org/records/23021880):
+`results/data/light_curve_data.h5`, `results/data/spectra_data.h5`, and the
+12 checkpoints under `results/hubble_posteriors/{fiducial,restricted}/`.
+The paper-only setup also downloads the external Pantheon+ data and covariance
+and queries the official CSC 2.1 TAP service for the paper's X-ray region
+(-1.251 to +1.251 degrees declination, all right ascensions). It validates the
+response and produces
+`results/diagnostics/chandra_precut_sep13/csc21_region_download.vot`, the CSC
+catalog read by the paper launcher. Existing valid catalogs are reused;
+failed or truncated queries stop setup. Source matching uses the catalog's
+positional-error ellipses during the Hubble analysis.
+The launcher regenerates the Wang completeness mock; raw fitting catalogs,
+per-object plot archives, and `Table_7.csv` are not required for this resume.
+The command above skips the full manuscript asset-copy step, which needs assets outside this download. Omit `QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1` only when those assets are available.
+
+### Raw inputs for optional refitting
+
+The Zenodo HDF5 files contain fit summaries, not individual photometric epochs.
+Both refitting stages require these additional files under `data/S82/`:
+
+- `Catalog.parquet`
+- `dr16s82_sdssLCRaw.parquet`
+- `dr16s82_ps1LCRaw.parquet`
+- `dr16s82_ZuberLCRaw.parquet`
+
+`setup_data` currently has no download source for these files. Supply them from
+the original S82 dataset before running the refitting commands; the demo runner
+checks for them before downloading fitting dependencies. The published Hubble
+workflow above does not require them. Run `python -m qvc.setup_data` before
+calling the individual fitting modules directly.
 
 ### Light Curve Fitting
 
@@ -195,7 +244,7 @@ python -m qvc.spectra.fit_spectra_jaxsedfit_joint \
   --sed-photometry-path "/path/to/saved_sed_photometry.parquet" \
   --output-dir "results/jaxsedfit_joint/demo" \
   --fig-dir "plots/jaxsedfit_joint/demo" \
-  --dsps-ssp-fn "../jaxqsofit/tempdata.h5" \
+  --dsps-ssp-fn "data/ssp_data_continuum_fsps_v3.2_lgmet_age.h5" \
   --filter_object_id 1452887 \
   --progress \
   --nproc 1
@@ -205,59 +254,49 @@ python -m qvc.spectra.fit_spectra_jaxsedfit_joint \
 
 Resumes the saved fiducial and restricted Hubble posterior checkpoints and regenerates the comparison outputs and plots.
 
-Expected output: results under `results/` and figures under `plots/hubble/paper_hubble_final_production/` and `plots/hubble/paper_hubble_final_production_restricted/`.
+`--resume` remains strict and fails when a requested checkpoint is absent. Use
+`--resume-if-exists` with the same optional per-model H5 paths to resume files
+that exist and start fresh fits for files that do not. For `run_hubble.xonsh`,
+set `QVC_HUBBLE_RESUME_IF_EXISTS=true` to check the default checkpoint paths, or
+set it to an explicit checkpoint path; do not combine it with
+`QVC_HUBBLE_RESUME`.
 
-Set `QVC_HUBBLE_MAGNITUDE_CONVENTION` explicitly to either `dereddened` or
-`attenuated` before running either command. There is no default. Hubble fitting
-accepts only CSV output from `fit_spectra_jaxsedfit_joint.py`.
+Expected output: results under `results/` and figures under `plots/hubble/fiducial/` and `plots/hubble/restricted/`.
 
-#### Fiducial fit
-
-```bash
-python -m qvc.hubble.hubble_fit --resume \
-  --cosmo_models FlatLambdaCDM FlatwCDM Flatw0waCDM \
-  --run full \
-  --speed production \
-  --spectra_fit_csv "results/data/jul29_2206_9dad47e_sedfit.csv" \
-  --magnitude-convention "$QVC_HUBBLE_MAGNITUDE_CONVENTION" \
-  --completeness_sim_file "results/data/mock_completeness_catalog_fresh.h5" \
-  --z_range 0.44 3.16 \
-  --result_prefix "fiducial" \
-  --prefix "paper_hubble_final_production" \
-  --sigma_clip_threshold 3.0 \
-  "results/data/lc_data_all.h5"
-```
-
-#### Restricted fit
+Both Docker and local execution use `run_hubble_paper.xonsh`, with the same
+Zenodo input names, cut settings, fixed pivots, Wang completeness model, and
+`fiducial`/`restricted` checkpoint directories. The default magnitude convention
+is `dereddened`; the completeness magnitude is `attenuated`. Preserve these
+settings when reproducing the published checkpoints.
 
 ```bash
-python -m qvc.hubble.hubble_fit --resume \
-  --cosmo_models FlatLambdaCDM FlatwCDM Flatw0waCDM \
-  --run full \
-  --speed production \
-  --spectra_fit_csv "results/data/jul29_2206_9dad47e_sedfit.csv" \
-  --magnitude-convention "$QVC_HUBBLE_MAGNITUDE_CONVENTION" \
-  --completeness_sim_file "results/data/mock_completeness_catalog_fresh.h5" \
-  --z_range 1.0 3.16 \
-  --result_prefix "restricted" \
-  --prefix "paper_hubble_final_production_restricted" \
-  --sigma_clip_threshold 3.0 \
-  "results/data/lc_data_all.h5"
+bash scripts/run_demo.sh hubble
 ```
+
+For an already downloaded dataset, the equivalent direct command is:
+
+```bash
+QVC_HUBBLE_SKIP_PAPER_ASSET_COPY=1 python -m xonsh --no-rc run_hubble_paper.xonsh
+```
+
+The launcher reads `results/data/light_curve_data.h5` and
+`results/data/spectra_data.h5`. The latter is the versioned minimal spectral
+HDF5 schema accepted by the Hubble loader; a legacy spectral CSV is not needed.
+It uses redshift ranges 0.44–3.16 (fiducial) and 0.7–3.16 (restricted).
 
 
 ## System Notes
 
 - Tested with Python `3.12.11`.
 - Tested on an AMD x86_64 desktop, MacBook Air M1, and Yale HPC.
-- All required Python packages and versions are listed under `requirements.txt` and will be installed automatically with the `pip install -e .` command.
+- All required Python packages and versions are listed under `pyproject.toml` and will be installed automatically with the `pip install -e .` command.
 - Typical local install time is on the order of 10 minutes and less than 1 hour on a normal desktop computer, depending on hardware and internet speed.
 - Local demo runtime is on the order of a few hours on a normal computer.
 - Full-scale production runs were executed on Yale HPC and required over `100,000` CPU-hours.
 
 ## Optional Pubtools Build
 
-We generated the Hubble completeness mock catalog with Shen et al. `quasarlf/pubtools`. For reproduction, setup downloads the generated catalog at `results/data/mock_completeness_catalog_fresh.h5`, so Docker users do not need to compile `pubtools`.
+The published Hubble launcher generates its Wang completeness mock using the Python implementation and does not need `pubtools`. Full setup also retains the legacy Shen mock at `results/data/mock_completeness_catalog_fresh.h5`.
 
 Only build `pubtools` if you want to regenerate that mock catalog:
 
@@ -270,7 +309,7 @@ Follow the `pubtools/clib` instructions in that repository to compile the shared
 
 ## Useful Scripts
 
-`scripts/run_demo.sh` runs setup plus the light-curve, spectra, and Hubble stages.
+`scripts/run_demo.sh hubble` runs paper setup and Hubble reproduction. Its `all` command additionally runs light-curve and spectrum fitting when raw inputs are present.
 
 `scripts/docker_entrypoint.sh` is the Docker entrypoint and accepts `all`, `setup`, `light-curve`, `spectra`, and `hubble`.
 

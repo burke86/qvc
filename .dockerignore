@@ -12,6 +12,7 @@ build
 data
 plots
 results
+docker-workdir
 notebooks
 
 .DS_Store
