@@ -568,13 +568,13 @@ def _prepare_psf_bandpass_fraction_inputs(q, bands, n_draws):
         posinf=0.0,
         neginf=0.0,
     )
-    agn_cont_draws = np.zeros_like(pl_draws)
-    for key, draws in recon_draws.items():
-        if key in {"host", "continuum"}:
-            continue
-        agn_cont_draws = agn_cont_draws + np.nan_to_num(
-            np.asarray(draws, dtype=float), nan=0.0, posinf=0.0, neginf=0.0
-        )
+    # Reconstruction also exposes line stacks and aggregate model arrays.
+    # Use the continuum aggregate so those are neither broadcast nor counted
+    # twice; broad/narrow line contributions are reconstructed separately below.
+    agn_cont_draws = np.nan_to_num(
+        np.asarray(recon_draws["continuum"], dtype=float),
+        nan=0.0, posinf=0.0, neginf=0.0,
+    ) - host_draws
     n_use = pl_draws.shape[0]
 
     scale_psf_draws = _draw_vector_strict(pred_out.get("scale_psf", []), n_use=n_use)

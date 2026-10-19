@@ -1597,3 +1597,27 @@ def test_run_one_fit_resume_fails_when_saved_samples_lack_psf_photometry(monkeyp
     assert result["fit_ok"] is False
     assert "were fit without PSF photometry" in result["error_message"]
     assert "Rerun without --resume" in result["error_message"]
+
+
+@pytest.mark.parametrize('n_lines', [0, 2])
+def test_bandpass_continuum_excludes_line_stacks_and_total_model(n_lines):
+    wave = np.array([1800., 3000., 5000.])
+    q = SimpleNamespace(
+        z=0.8, wave=wave,
+        pred_out={'scale_psf': np.ones(3), 'eta_psf': np.ones(3)},
+        reconstruct_posterior_spectrum=lambda **kwargs: {
+            'wave': wave,
+            'draws': {
+                'PL': np.full((3, 3), 2.),
+                'host': np.ones((3, 3)),
+                'continuum': np.full((3, 3), 4.),
+                'custom_continuum': np.ones((3, 3)),
+                'lines': np.full((3, 3), 10.),
+                'line_components': np.zeros((3, n_lines, 3)),
+                'model': np.full((3, 3), 14.),
+            },
+        },
+    )
+    out = fit_spectra._prepare_psf_bandpass_fraction_inputs(q, bands=('g',), n_draws=3)
+    np.testing.assert_allclose(out['agn_psf_draws'], 3.)
+    np.testing.assert_allclose(out['host_psf_draws'], 1.)
