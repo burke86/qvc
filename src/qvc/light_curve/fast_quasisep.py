@@ -277,7 +277,9 @@ def fused_log_probability(kernel, X, diag, resid, *, sort_time=None):
     t = jnp.asarray(t)
     dt = jnp.diff(t, prepend=t[0])
 
-    if hasattr(kernel, "_driver_to_chain_columns"):
+    if hasattr(kernel, "batched_transitions"):
+        a = kernel.batched_transitions(dt)
+    elif hasattr(kernel, "_driver_to_chain_columns") and hasattr(kernel, "order"):
         a = erlang_transitions(kernel, dt)
     else:
         Xp = jax.tree_util.tree_map(lambda v: jnp.append(v[0], v[:-1]), X)

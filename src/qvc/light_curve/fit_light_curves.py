@@ -4790,6 +4790,7 @@ def build_single_object_model_mag_flux_linearized(
                 {
                     "disk_order": disk_order,
                     "blr_order": erlang_order,
+                    "use_fast_solver": use_fast_solver,
                 }
                 if shared_latent
                 else {"enforce_positive_flux_guard": enforce_positive_flux_guard}
@@ -5578,7 +5579,7 @@ def main():
         default=False,
         help=(
             "Use the fused single-scan quasisep likelihood with a custom adjoint "
-            "(exact; --model_variant mag_flux_linearized_erlang only)."
+            "(exact; --model_variant mag_flux_linearized_erlang or shared_latent_blr)."
         ),
     )
     parser.add_argument(
@@ -5771,8 +5772,11 @@ def main():
         raise ValueError("--target_accept must be strictly between 0 and 1.")
     if args.disk_order != DEFAULT_DISK_ORDER and args.model_variant != SHARED_LATENT_BLR_VARIANT:
         raise ValueError("--disk_order is only used by --model_variant shared_latent_blr.")
-    if args.fast_solver and args.model_variant != "mag_flux_linearized_erlang":
-        raise ValueError("--fast_solver is only used by --model_variant mag_flux_linearized_erlang.")
+    if args.fast_solver and args.model_variant not in FLUX_LINEARIZED_MODEL_VARIANTS:
+        raise ValueError(
+            "--fast_solver is only used by --model_variant mag_flux_linearized_erlang "
+            "or shared_latent_blr."
+        )
     if args.dho_drw_parameterization and args.model_variant != "mag_flux_linearized_erlang":
         raise ValueError(
             "--dho_drw_parameterization is only used by "

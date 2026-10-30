@@ -455,3 +455,81 @@ def test_flux_refinement_uses_independently_verified_conditional_mean():
     expected_pseudo_y = expected_mean + (obj["y"] + c * np.log1p(expected_mean)) / derivative
     np.testing.assert_allclose(pseudo_y, expected_pseudo_y, rtol=2e-8, atol=2e-10)
     np.testing.assert_allclose(pseudo_errors, obj["yerr"] / abs(derivative), rtol=2e-8, atol=2e-10)
+
+
+def _order_kernel(disk_order, blr_order):
+    return SharedLatentDiskBLRQS(
+        tau_fast=jnp.array([12.0]),
+        tau_slow=jnp.array([240.0]),
+        lag_disk=jnp.array([1.5, 2.5, 4.0]),
+        lag_blr=jnp.array([25.0, 60.0, 140.0]),
+        amp_cont=jnp.array([0.12, 0.10, 0.08]),
+        amp_blr=jnp.array([0.04, 0.03, 0.02]),
+        disk_order=disk_order,
+        blr_order=blr_order,
+    )
+
+
+@pytest.mark.parametrize("disk_order,blr_order", [(1, 1), (3, 3), (4, 3), (2, 5)])
+def test_block_stationary_covariance_matches_sequential_solve(disk_order, blr_order):
+    kernel = _order_kernel(disk_order, blr_order)
+    np.testing.assert_allclose(
+        np.asarray(kernel.stationary_covariance()),
+        np.asarray(kernel._stationary_covariance_sequential()),
+        rtol=1e-10,
+        atol=1e-13,
+    )
+
+
+@pytest.mark.parametrize("disk_order,blr_order", [(1, 1), (3, 3), (4, 3), (2, 5)])
+def test_batched_transitions_match_pairwise_transition(disk_order, blr_order):
+    kernel = _order_kernel(disk_order, blr_order)
+    dt = jnp.array([0.0, 1e-7, 0.3, 2.5, 13.0, 61.0, 400.0, 3000.0])
+    batched = np.asarray(kernel.batched_transitions(dt))
+    pairwise = np.asarray(
+        jax.vmap(lambda d: kernel.transition_matrix((0.0, 0), (d, 0)))(dt)
+    )
+    np.testing.assert_allclose(batched, pairwise, rtol=1e-11, atol=1e-14)
+
+
+@pytest.mark.parametrize("has_jitter", [False, True])
+def test_fast_solver_log_prob_matches_tinygp(has_jitter):
+    rng = np.random.default_rng(5)
+    n_band, n_epoch = 3, 40
+    # Simultaneous multiband epochs exercise the solver's exact-tie branch.
+    epochs = np.sort(rng.uniform(0.0, 2000.0, n_epoch))
+    t = np.concatenate([np.repeat(epochs[:20], n_band), rng.uniform(0.0, 2000.0, 60)])
+    band = np.concatenate([np.tile(np.arange(n_band), 20), rng.integers(0, n_band, 60)])
+    y = rng.normal(0.0, 0.1, t.size)
+    yerr = rng.uniform(0.01, 0.05, t.size)
+    X = (jnp.asarray(t), jnp.asarray(band, dtype=jnp.int32))
+
+    def build(fast):
+        return make_multiband_shared_latent_blr_model(
+            X, jnp.asarray(y), jnp.asarray(yerr), n_band=n_band,
+            has_jitter=has_jitter, use_fast_solver=fast,
+        )
+
+    params = {
+        "tau_fast_driver": jnp.array([9.0]),
+        "tau_slow_driver": jnp.array([210.0]),
+        "lag_disk": jnp.asarray(rng.uniform(1.0, 5.0, n_band)),
+        "lag_blr": jnp.asarray(rng.uniform(20.0, 150.0, n_band)),
+        "amp_cont_relflux": jnp.asarray(rng.uniform(0.05, 0.2, n_band)),
+        "amp_blr_relflux": jnp.asarray(rng.uniform(0.01, 0.08, n_band)),
+        "mean": jnp.asarray(rng.normal(0.0, 0.02, n_band)),
+        "linear_trend": jnp.asarray(0.01),
+    }
+    if has_jitter:
+        params["log_jitter"] = jnp.full(n_band, -4.0)
+
+    m_ref, m_fast = build(False), build(True)
+    np.testing.assert_allclose(
+        float(m_fast.log_prob(params)), float(m_ref.log_prob(params)), rtol=1e-10
+    )
+    g_ref = jax.grad(lambda p: m_ref.log_prob(p))(params)
+    g_fast = jax.grad(lambda p: m_fast.log_prob(p))(params)
+    for key in g_ref:
+        np.testing.assert_allclose(
+            np.asarray(g_fast[key]), np.asarray(g_ref[key]), rtol=5e-7, atol=1e-10
+        )

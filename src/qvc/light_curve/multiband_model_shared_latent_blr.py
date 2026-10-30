@@ -111,8 +111,78 @@ class SharedLatentDiskBLRQS(qs.Quasisep):
         endpoints = jnp.asarray([chain_slice.stop - 1 for chain_slice in slices])
         return jnp.sqrt(_safe_pos(covariance[endpoints, endpoints]))
 
+    def _chain_groups(self):
+        """Static layout of the disk and delayed chains: (start, count, order, lags)."""
+
+        B = int(jnp.asarray(self.lag_disk).shape[0])
+        k_disk, k_blr = int(self.disk_order), int(self.blr_order)
+        return (
+            (2, B, k_disk, jnp.asarray(self.lag_disk, dtype=float)),
+            (2 + B * k_disk, B, k_blr, jnp.asarray(self.lag_blr, dtype=float)),
+        )
+
     def stationary_covariance(self):
-        """Solve ``A P + P A.T = -Q`` using A's triangular structure."""
+        """Solve ``A P + P A.T = -Q`` block by block.
+
+        Every chain is driven only by the two driver states, so the Lyapunov
+        equation splits into the known driver block, one small Sylvester
+        equation per chain for its driver cross-covariance, and one per chain
+        pair. All of them are solved as batched dense systems, which is far
+        cheaper to differentiate than the elementwise sequential solve kept in
+        ``_stationary_covariance_sequential`` as a test oracle.
+        """
+
+        base = self._base()
+        A0 = base.design_matrix()
+        P0 = base.stationary_covariance()
+        h0 = base.observation_model((0.0, 0))
+        dtype = A0.dtype
+        size = self._chain_slices()[1]
+
+        groups = []
+        for start, count, order, lags in self._chain_groups():
+            rate = order / _safe_pos(lags)
+            sub = np.eye(order, k=-1)
+            T = rate[:, None, None] * (sub - np.eye(order))[None]
+            G = jnp.zeros((count, order, 2), dtype=dtype).at[:, 0, :].set(
+                rate[:, None] * h0[None, :]
+            )
+            eye2, eyek = jnp.eye(2, dtype=dtype), jnp.eye(order, dtype=dtype)
+            # Row-major vec: vec(T X + X A0^T) = (T kron I + I kron A0) vec(X).
+            operator = jax.vmap(lambda Tc: jnp.kron(Tc, eye2) + jnp.kron(eyek, A0))(T)
+            rhs = -(G @ P0).reshape(count, -1)
+            X = jnp.linalg.solve(operator, rhs[..., None])[..., 0].reshape(count, order, 2)
+            groups.append((start, count, order, T, G, X))
+
+        P = jnp.zeros((size, size), dtype=dtype).at[:2, :2].set(P0)
+        for start, count, order, _T, _G, X in groups:
+            flat = X.reshape(count * order, 2)
+            P = P.at[start:start + count * order, :2].set(flat)
+            P = P.at[:2, start:start + count * order].set(flat.T)
+        for start_i, count_i, order_i, T_i, G_i, X_i in groups:
+            for start_j, count_j, order_j, T_j, G_j, X_j in groups:
+                eye_i = jnp.eye(order_i, dtype=dtype)
+                eye_j = jnp.eye(order_j, dtype=dtype)
+
+                def solve_pair(Ti, Gi, Xi, Tj, Gj, Xj):
+                    operator = jnp.kron(Ti, eye_j) + jnp.kron(eye_i, Tj)
+                    rhs = -(Gi @ Xj.T + Xi @ Gj.T)
+                    return jnp.linalg.solve(operator, rhs.reshape(-1)).reshape(order_i, order_j)
+
+                Y = jax.vmap(
+                    lambda Ti, Gi, Xi: jax.vmap(
+                        lambda Tj, Gj, Xj: solve_pair(Ti, Gi, Xi, Tj, Gj, Xj)
+                    )(T_j, G_j, X_j)
+                )(T_i, G_i, X_i)
+                block = Y.transpose(0, 2, 1, 3).reshape(count_i * order_i, count_j * order_j)
+                P = P.at[
+                    start_i:start_i + count_i * order_i,
+                    start_j:start_j + count_j * order_j,
+                ].set(block)
+        return 0.5 * (P + P.T)
+
+    def _stationary_covariance_sequential(self):
+        """Elementwise triangular Lyapunov solve, retained as a test oracle."""
 
         base = self._base()
         A = self.design_matrix()
@@ -218,17 +288,94 @@ class SharedLatentDiskBLRQS(qs.Quasisep):
             phi = phi.at[chain_slice, 1].set(col_slow)
         return phi
 
-    def to_symm_qsm(self, X):
+    def _transition_scatter_indices(self):
+        """Static (rows, cols) of the nonzeros written by ``batched_transitions``."""
+
+        rows, cols = [0, 1], [0, 1]
+        chain_rows = []
+        for start, count, order, _lags in self._chain_groups():
+            for m in range(count):
+                base_row = start + m * order
+                for i in range(order):
+                    for j in range(i + 1):
+                        rows.append(base_row + i)
+                        cols.append(base_row + j)
+                chain_rows.extend(base_row + i for i in range(order))
+        rows += chain_rows + chain_rows
+        cols += [0] * len(chain_rows) + [1] * len(chain_rows)
+        return np.asarray(rows), np.asarray(cols)
+
+    def batched_transitions(self, dt):
+        """Vectorized ``vmap(transition_matrix)`` over consecutive time steps.
+
+        Builds every step's transition with one static scatter instead of a
+        per-step Python loop of ``.at[].set`` updates, which keeps both the
+        compiled program and its reverse pass small.
+        """
+
+        from qvc.light_curve.fast_quasisep import _driver_to_chain_columns_horner
+
+        dt = jnp.asarray(dt)
+        base = self._base()
+        tau_fast, tau_slow = base._ordered_taus()
+        lam_fast, lam_slow = 1.0 / tau_fast[0], 1.0 / tau_slow[0]
+        e_fast, e_slow = jnp.exp(-lam_fast * dt), jnp.exp(-lam_slow * dt)
+        obs_scale = base._obs_scale()[0]
+
+        chain_vals, cols_fast, cols_slow = [], [], []
+        for _start, count, order, lags in self._chain_groups():
+            q = order / _safe_pos(lags)
+            eq = jnp.exp(-q[None, :] * dt[:, None])
+            qdt = q[None, :] * dt[:, None]
+            toep = [eq]
+            fact = 1.0
+            for d_ in range(1, order):
+                fact *= d_
+                toep.append(eq * qdt ** d_ / fact)
+            toep = jnp.stack(toep, axis=-1)
+            chain_vals.append(
+                jnp.stack(
+                    [toep[:, m, i - j] for m in range(count) for i in range(order) for j in range(i + 1)],
+                    axis=1,
+                )
+            )
+            ones = jnp.ones_like(q)
+            for lam, e_lam, sign, out in (
+                (lam_fast, e_fast, +1.0, cols_fast),
+                (lam_slow, e_slow, -1.0, cols_slow),
+            ):
+                cols = jax.vmap(
+                    lambda dtk, ek, eqk: _driver_to_chain_columns_horner(
+                        dtk, lam * ones, ek * ones, q, eqk, sign, order
+                    )
+                )(dt, e_lam, eq)
+                out.append(obs_scale * cols.reshape(dt.shape[0], -1))
+
+        values = jnp.concatenate(
+            [e_fast[:, None], e_slow[:, None], *chain_vals, *cols_fast, *cols_slow], axis=1
+        )
+        rows, cols = self._transition_scatter_indices()
+        size = self._chain_slices()[1]
+        out = jnp.zeros((dt.shape[0], size, size), dtype=values.dtype)
+        return out.at[:, rows, cols].set(values)
+
+    def symm_qsm_generators(self, X):
+        """Return ``(d, p, q, a)`` of the causal symmetric QSM for sorted ``X``."""
+
         Pinf = self.stationary_covariance()
         slices, _size = self._chain_slices()
         endpoints = jnp.asarray([chain_slice.stop - 1 for chain_slice in slices])
         stds = jnp.sqrt(_safe_pos(Pinf[endpoints, endpoints]))
-        Xprev = jax.tree_util.tree_map(lambda y: jnp.append(y[0], y[:-1]), X)
-        transitions = jax.vmap(self.transition_matrix)(Xprev, X)
+        t = jnp.asarray(X[0])
+        transitions = self.batched_transitions(jnp.diff(t, prepend=t[:1]))
         h = jax.vmap(lambda Xi: self._observation_model_with_stds(Xi, stds))(X)
         diag = jnp.einsum("ni,ij,nj->n", h, Pinf, h)
-        p = jax.vmap(lambda hi, Fi: hi @ Fi)(h, transitions)
+        p = jnp.einsum("ni,nij->nj", h, transitions)
         q = h @ Pinf.T
+        return diag, p, q, transitions
+
+    def to_symm_qsm(self, X):
+        diag, p, q, transitions = self.symm_qsm_generators(X)
         return SymmQSM(
             diag=DiagQSM(d=diag),
             lower=StrictLowerTriQSM(p=p, q=q, a=transitions),
@@ -385,11 +532,20 @@ class SharedLatentDiskBLRRelativeFluxModel(ContiBLRRelativeFlux_SHO_Model):
 
     disk_order: int
     blr_order: int
+    use_fast_solver: bool
 
-    def __init__(self, *args, disk_order=DEFAULT_DISK_ORDER, blr_order=3, **kwargs):
+    def __init__(
+        self,
+        *args,
+        disk_order=DEFAULT_DISK_ORDER,
+        blr_order=3,
+        use_fast_solver=False,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.disk_order = int(disk_order)
         self.blr_order = int(blr_order)
+        self.use_fast_solver = bool(use_fast_solver)
 
     def _build_kernel(self, params):
         return SharedLatentDiskBLRQS(
@@ -421,6 +577,31 @@ class SharedLatentDiskBLRRelativeFluxModel(ContiBLRRelativeFlux_SHO_Model):
             inds,
         )
 
+    @eqx.filter_jit
+    def log_prob(self, params):
+        """GP log-likelihood; optionally via the fused single-scan solver.
+
+        The fast path evaluates exactly the same likelihood as the tinygp
+        solver (see ``tests/test_multiband_model_shared_latent_blr.py``) with
+        the hand-written adjoint of ``qvc.light_curve.fast_quasisep``.
+        """
+        if not self.use_fast_solver:
+            return super().log_prob(params)
+        from qvc.light_curve.fast_quasisep import scan_loglike
+
+        t, band = self.X
+        inds = jnp.argsort(t)
+        Xs = (t[inds], band[inds])
+        diag = self.diag
+        if self.has_jitter:
+            diag = diag + self._jitter_diag(params, band)
+        d, p, q, a = self._build_kernel(params).symm_qsm_generators(Xs)
+        mean = jax.vmap(lambda Xi: self.get_mean(self.zero_mean, params, Xi))(Xs)
+        resid = self._observed_y_sorted(params, inds) - mean
+        ties = jnp.concatenate([jnp.zeros((1,), bool), jnp.diff(Xs[0]) == 0.0])
+        value = scan_loglike(d + diag[inds], p, q, a, resid, ties)
+        return value - 0.5 * resid.shape[0] * jnp.log(2 * jnp.pi)
+
 
 def make_multiband_shared_latent_blr_model(
     X,
@@ -435,6 +616,7 @@ def make_multiband_shared_latent_blr_model(
     has_jitter=True,
     disk_order=DEFAULT_DISK_ORDER,
     blr_order=3,
+    use_fast_solver=False,
 ):
     """Construct the shared-driver disk plus delayed-response model."""
 
@@ -456,6 +638,7 @@ def make_multiband_shared_latent_blr_model(
         has_lag=False,
         disk_order=disk_order,
         blr_order=blr_order,
+        use_fast_solver=use_fast_solver,
     )
 
 
