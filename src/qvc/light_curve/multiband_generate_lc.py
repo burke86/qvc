@@ -911,6 +911,69 @@ def load_s82_from_hdf5(file_path="s82_objs.h5"):
 
     return s82_objs
 
+DR16Q_POPULATE_COLUMNS = (
+    "RA",
+    "DEC",
+    "Z_SYS",
+    "Z_SYS_ERR",
+    "SDSS_NAME",
+    "EBV",
+    "LOGLBOL",
+    "LOGLBOL_ERR",
+    "LOGL3000",
+    "LOGL3000_ERR",
+    "LOGL5100",
+    "LOGL5100_ERR",
+    "LOGMBH",
+    "LOGMBH_ERR",
+    "LOGLEDD_RATIO",
+    "LOGLEDD_RATIO_ERR",
+    "PLATE",
+    "MJD",
+    "FIBERID",
+    "SN_MEDIAN_ALL"
+)
+
+
+def load_dr16q_populate_columns(fits_path):
+    """Return the DR16Q columns used by populate_sdss_fields, via a parquet cache.
+
+    The full property FITS is ~3 GB and row-major, so even a column subset
+    touches every page. The first call reads it once and writes the needed
+    columns (all rows) next to it; later calls read only that small cache. The
+    cache is rebuilt when the FITS is newer or a column is missing, and is
+    written atomically so concurrent jobs never see a partial file. The cache
+    alone suffices when the FITS is absent.
+    """
+    fits_path = Path(fits_path)
+    cache_path = fits_path.with_name(fits_path.stem + "_populate_columns.parquet")
+    if cache_path.exists() and (
+        not fits_path.exists() or cache_path.stat().st_mtime >= fits_path.stat().st_mtime
+    ):
+        cached = pd.read_parquet(cache_path)
+        if all(name in cached.columns for name in DR16Q_POPULATE_COLUMNS):
+            return Table.from_pandas(cached[list(DR16Q_POPULATE_COLUMNS)])
+
+    dr16q = Table.read(fits_path, hdu=1)
+    missing_dr16q_columns = [name for name in DR16Q_POPULATE_COLUMNS if name not in dr16q.colnames]
+    if missing_dr16q_columns:
+        missing_cols = ", ".join(missing_dr16q_columns)
+        raise ValueError(f"DR16Q table missing required column(s): {missing_cols}")
+    frame = pd.DataFrame(
+        {name: np.asarray(dr16q[name]).astype(np.asarray(dr16q[name]).dtype.newbyteorder("=")) for name in DR16Q_POPULATE_COLUMNS}
+    )
+    del dr16q
+    tmp_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+    try:
+        frame.to_parquet(tmp_path, index=False)
+        os.replace(tmp_path, cache_path)
+    except OSError as exc:
+        warnings.warn(f"Could not write DR16Q column cache {cache_path}: {exc}")
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return Table.from_pandas(frame)
+
+
 def populate_sdss_fields(s82_objs, progress_bar=False, *, preserve_stone_redshift=False):
     redshift_tolerance = 1.0e-3
     _ = progress_bar
@@ -962,30 +1025,8 @@ def populate_sdss_fields(s82_objs, progress_bar=False, *, preserve_stone_redshif
         missing_ids = ", ".join(str(object_id) for object_id in missing_catalog_ids)
         raise ValueError(f"Missing S82 catalog match for object_id(s): {missing_ids}")
 
-    dr16q = Table.read(resolve_qvc_data_path("data/dr16q_prop_May01_2024.fits"), hdu=1)
-    required_dr16q_columns = (
-        "RA",
-        "DEC",
-        "Z_SYS",
-        "Z_SYS_ERR",
-        "SDSS_NAME",
-        "EBV",
-        "LOGLBOL",
-        "LOGLBOL_ERR",
-        "LOGL3000",
-        "LOGL3000_ERR",
-        "LOGL5100",
-        "LOGL5100_ERR",
-        "LOGMBH",
-        "LOGMBH_ERR",
-        "LOGLEDD_RATIO",
-        "LOGLEDD_RATIO_ERR",
-        "PLATE",
-        "MJD",
-        "FIBERID",
-        "SN_MEDIAN_ALL"
-    )
-    missing_dr16q_columns = [name for name in required_dr16q_columns if name not in dr16q.colnames]
+    dr16q = load_dr16q_populate_columns(resolve_qvc_data_path("data/dr16q_prop_May01_2024.fits"))
+    missing_dr16q_columns = [name for name in DR16Q_POPULATE_COLUMNS if name not in dr16q.colnames]
     if missing_dr16q_columns:
         missing_cols = ", ".join(missing_dr16q_columns)
         raise ValueError(f"DR16Q table missing required column(s): {missing_cols}")
