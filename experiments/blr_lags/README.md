@@ -30,7 +30,7 @@ See `run4_seeing/plots/lag_vs_L_frac_gt10.pdf` and `run4_seeing/plots/strong_lin
 
 ```bash
 git clone https://github.com/burke86/qvc.git && cd qvc
-git checkout agent/remove-legacy-erlang-variants   # shared_latent_blr only, fast likelihood, DR16Q column cache
+git checkout prm   # shared_latent_blr only, fast likelihood, DR16Q column cache
 pip install -e .
 pip install "equinox==0.12.2"                      # eztaox breaks with equinox 0.13.x (BoundMethod import error)
 pip install jaxns speclite astroquery              # nested sampling, filter curves, SDSS spectra
