@@ -226,7 +226,7 @@ if REF:
 axp.axvline(np.log10(prof["map_lag_rest"]), color="#eb6834", lw=1.0, ls="-.", label=f"MAP: {prof['map_lag_rest']:.0f} d")
 lo, med, hi = prof["q_post"]
 axp.axvspan(np.log10(lo), np.log10(hi), color="#2a78d6", alpha=0.08, lw=0)
-axp.set_xlabel(f"log {line} ({line_band}-band) BLR lag [rest days]")
+axp.set_xlabel(f"log {line} ({line_band}-band) BLR lag (rest days)")
 axp.set_ylabel("density per dex")
 axp.set_title(f"Lag posterior: {med:.0f} [{lo:.0f}, {hi:.0f}] d", loc="left", fontsize=9)
 axp.legend(fontsize=7.5, frameon=False, loc="upper left")
@@ -255,8 +255,8 @@ for name, w in (("Lyα", 1216), ("C IV", 1549), ("C III]", 1909), ("Mg II", 2798
         axs.text(wo, fmax * 0.02, name, rotation=90, fontsize=7.5, color="#c4302b" if hl else "#52514e", va="bottom", ha="right")
 axs.set_xlim(3000, 10500)
 axs.set_ylim(0, fmax)
-axs.set_xlabel("observed wavelength [Å]")
-axs.set_ylabel("flux [1e-17 erg/s/cm²/Å]")
+axs.set_xlabel("observed wavelength (Å)")
+axs.set_ylabel("flux (1e-17 erg/s/cm²/Å)")
 axs.set_title(f"SDSS spectrum {plate}-{mjd}-{fiber}; SDSS filter curves (ZTF/PS1 similar)", loc="left", fontsize=9)
 
 out = Path(outdir)

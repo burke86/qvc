@@ -1140,6 +1140,15 @@ def test_make_lc_drops_z_by_default_but_keeps_lya_bands():
     assert lc["dropped_bands"] == ["z"]
 
 
+def test_make_lc_keeps_z_when_requested():
+    obj = _make_object(z=1.6)
+    lc = make_lc(obj, bands=["u", "g", "r", "i", "z"], keep_z_band=True)
+
+    assert lc is not None
+    assert lc["bands"] == ["u", "g", "r", "i", "z"]
+    assert lc["dropped_bands"] == []
+
+
 def test_make_lc_centers_with_inverse_variance_weighted_mean():
     obj = _make_object(z=1.0)
     obj["mags"]["g"] = np.array([20.0, 21.0])

@@ -3536,18 +3536,23 @@ def make_lc(
     alpha_sigma=-0.5,
     beta_tau=0.2,
     drop_band_lyman_alpha=False,
-    verbose=True
+    verbose=True,
+    keep_z_band=False,
 ):
-    """Prepare one object's multiband time series into model-ready arrays."""
+    """Prepare one object's multiband time series into model-ready arrays.
 
+    The z band is dropped unless ``keep_z_band`` is set.
+    """
+
+    default_dropped = [] if keep_z_band else ["z"]
     if drop_band_lyman_alpha:
-        dropped_bands = sdss_bands_affected_by_lya(data["z"]) + ["z"]
+        dropped_bands = sdss_bands_affected_by_lya(data["z"]) + default_dropped
         if verbose:
             logging.info(
                 f"Excluding Ly-alpha-affected bands {dropped_bands} for object {data['object_id']} at z={data['z']}"
             )
     else:
-        dropped_bands = ["z"]
+        dropped_bands = default_dropped
         if verbose:
             logging.info(
                 f"Excluding default bands {dropped_bands} for object {data['object_id']} at z={data['z']}; "
@@ -5076,6 +5081,12 @@ def main():
         default=False,
         help="Drop bands blueward of Ly-alpha instead of keeping them with smooth attenuation.",
     )
+    parser.add_argument(
+        "--keep_z_band",
+        action="store_true",
+        default=False,
+        help="Fit the z band (SDSS and PS1 only); it is dropped by default.",
+    )
     parser.add_argument("--load_nearby_lc_csv", type=str, default=None, help="CSV listing nearby LCs to load.")
     parser.add_argument("--tau_fast_truncated", action="store_true", default=False, help="Truncated prior for tau_fast0.")
     parser.add_argument("--n_blr_terms", type=int, choices=(1, 2), default=1, help="Number of BLR lag terms to fit.")
@@ -5305,6 +5316,7 @@ def main():
                 alpha_sigma=alpha_sigma,
                 beta_tau=beta_tau,
                 drop_band_lyman_alpha=args.drop_band_lyman_alpha,
+                keep_z_band=args.keep_z_band,
             )
             if lc is None:
                 continue

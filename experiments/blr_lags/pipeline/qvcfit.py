@@ -45,7 +45,7 @@ def build(oid):
     obj = G.populate_sdss_fields(G.concat_light_curves(filter_object_ids=[oid]), progress_bar=False)[0]
     obj["psf_constant_flux_n_bands_corrected"] = 0
     obj["psf_constant_flux_corrected"] = False
-    obj |= F.make_lc(obj, bands=["u", "g", "r", "i", "z"], verbose=False)
+    obj |= F.make_lc(obj, bands=["u", "g", "r", "i", "z"], verbose=False, keep_z_band=True)
     bands = list(obj["bands"])
     z = float(obj["z"])
     B = len(bands)
