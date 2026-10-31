@@ -160,6 +160,7 @@ Scripts are in `pipeline/`.
 - `analyze_line.py <run_dir> <line>`: lag vs. L plot, results CSV and `summary.txt`.
 - `object_job.sh <oid>` runs fit → profile → figure for each selected line of one object. `driver.sh` runs `job_order.txt` 3 objects at a time.
 - `dr16q_lines.py`: DR16Q matching, the line quality mask and in-band line fractions.
+- `query_morphology.py`: SDSS and PS1 extendedness flags and the default extended-source cut.
 - `line_ew.py`, `strong_lines.py`, `count_strong.py`, `strong10_plot.py`: line band fractions and the strong-line cuts.
 
 **Reference R–L relations** (in `analyze_line.py`):
@@ -205,18 +206,23 @@ To do:
 
 ### Task B: check extendedness (do this before interpreting any lag)
 
-For each selected object, get a morphology flag and the host contribution:
+`pipeline/query_morphology.py <run_dir>` writes `<run_dir>/morphology.csv` for every object in the run's `selection.csv`:
 
-- **SDSS:** `type` (3 = galaxy) and `psfMag_r − cModelMag_r` (above 0.145 means extended) from DR16 PhotoObj. Query through CasJobs or `astroquery.sdss` by `objID` or position. The Stripe 82 coadd (Annis et al. 2014) is deeper and better for faint hosts.
-- **PS1 DR2:** `rMeanPSFMag − rMeanKronMag` (above 0.05 means extended) and the PS1 point-source score (`ps_score`, Tachibana & Miller 2018, MAST HLSP). Query by `ps1objID` through `astroquery.mast`.
-- **Optional:** Legacy Surveys DR10 `TYPE` (PSF / REX / EXP / DEV / SER).
+- **SDSS DR16 PhotoObj**, matched by position within 2″: `type` and `psfMag − cModelMag` in g, r, i, z.
+- **PS1 DR2 mean photometry**, by 2″ cone search: `MeanPSFMag − MeanKronMag` in g, r, i, z. Do not join on the catalog's `ps1objID`: `Catalog.parquet` stores it as a float, so its last digits are lost and almost no IDs match.
+- **Default cut:** `extended = (sdss_type == 3) | (psfMag_r − cModelMag_r > 0.145)`. Drop extended objects for Hα and Hβ. Do **not** apply the PSF − cModel test in the line band: for faint, high-z objects (Mg II at z ≈ 2, Hβ in z), the i/z values are noise and flag about a third of them spuriously.
 - Already in the catalog: `qg_fragal` (SED-based host fraction).
 
-Then:
+What the cut did (first Hα/Mg II run and the Hβ run, single-peaked lags not at the grid edge):
 
-- Plot extendedness against redshift, `qg_fragal` and the lag outcomes (offset from R–L, multimodal, edge-pinned).
-- In the first run, low-z Hβ objects were more often edge-pinned (Spearman ρ = −0.43, p = 0.02), probably from host light.
-- Decide on a cut, or fit the extended objects with the PSF-fraction correction (`--subtract_psf_constant_flux` needs the spectra-fit HDF5 PSF fractions). Report R–L results both with and without the extended sources.
+- **Hα:** 39 of 95 objects are extended. Their lags sit about 0.35 dex above the reference R–L, mostly at low luminosity, consistent with host light. Removing them cut the scatter from about 0.5 to 0.27 dex, with no offset, but the 31 remaining point sources span only log L5100 ≈ 43.8–44.6 and show no significant slope.
+- **Hβ:** only 25 of 214 are extended (z ≈ 0.8), and they sit about 0.2 dex high. The Hβ problem is the noisy z-band photometry, not hosts.
+- **Mg II:** posteriors are prior-dominated with or without the cut.
+
+Still to do:
+
+- Compare the SDSS flag with PS1 PSF − Kron (above about 0.05 means extended) and the PS1 point-source score (`ps_score`, Tachibana & Miller 2018). The Stripe 82 coadd (Annis et al. 2014) is deeper and better for faint hosts.
+- Instead of dropping extended objects, try fitting them with the PSF-fraction correction (`--subtract_psf_constant_flux` needs the spectra-fit HDF5 PSF fractions). Report R–L results both with and without them.
 
 ### Task C: Laplace run on the strong-line sample
 
@@ -294,6 +300,7 @@ experiments/blr_lags/
     qvcfit.py fit_object.py lag_profile.py diagnostic_figure.py analyze_line.py
     object_job.sh driver.sh
     dr16q_lines.py            DR16Q matching, line quality mask, in-band line fractions
+    query_morphology.py       SDSS/PS1 extendedness flags for a run (morphology.csv)
     line_ew.py strong_lines.py strong10_plot.py count_strong.py
   first_run_diagnostics/    (local) lag_roles.csv, outcome_correlates.csv from the first 30+30 run
   run4_seeing/              (local) results of the 4-line, 60-object run (fitted with seeing terms)
