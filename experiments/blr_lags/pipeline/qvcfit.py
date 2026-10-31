@@ -1,11 +1,10 @@
-"""Shared single-object model construction for the four-line BLR lag run.
+"""Shared single-object model construction for the BLR lag pipeline.
 
 Mirrors fit_light_curves.main() input preparation (concat_light_curves with the
 default outlier rejection -> populate_sdss_fields -> make_lc -> jitter/survey
 masks -> flux-linearized shared_latent_blr model, refinement_iters=1, fast
-solver), with --enable_seeing_dependence semantics. Parquet reads are filtered
-to the object, and the seeing sidecars are read from SEEING_DIR instead of
-data/S82 so the user's data directory is untouched.
+solver). Parquet reads are filtered to the object so a fit never loads a full
+catalog.
 """
 
 from pathlib import Path
@@ -14,7 +13,6 @@ import numpy as np
 import pandas as pd
 
 D = str(Path(__file__).resolve().parents[3] / "data" / "S82")
-SEEING_DIR = Path(__file__).resolve().parents[1] / "seeing"
 _STATE = {}
 _read_parquet = pd.read_parquet
 
@@ -39,14 +37,7 @@ import jax.numpy as jnp  # noqa: E402
 from qvc.light_curve import fit_light_curves as F  # noqa: E402
 from qvc.light_curve import multiband_generate_lc as G  # noqa: E402
 
-G.SEEING_SIDECARS = {
-    "sdss": str(SEEING_DIR / "dr16s82_sdssSeeing.parquet"),
-    "ps1": str(SEEING_DIR / "dr16s82_ps1Seeing.parquet"),
-    "ztf": str(SEEING_DIR / "dr16s82_ztfSeeing.parquet"),
-}
-
-
-def build(oid, *, seeing=True):
+def build(oid):
     """Return (obj, model, info dict) for one object, exactly as the pipeline would build it."""
     oid = str(oid)
     _STATE["oid"] = oid
@@ -68,9 +59,6 @@ def build(oid, *, seeing=True):
     model = F.build_single_object_model_mag_flux_linearized(
         F._flux_linearized_fit_object(obj, y_rel, yerr_rel), lam_rf, log_jitter_mean_fit,
         lam_lya_rf=F.compute_lam_lya_suppression_rf(bands, z),
-        use_fast_solver=True, enable_seeing_dependence=seeing,
+        use_fast_solver=True,
     )
-    seeing_mask = np.asarray(obj.get("seeing_active_mask", np.zeros(1, bool)))
-    n_seeing = int(np.sum(np.isfinite(np.asarray(obj.get("psf_fwhm_arcsec", [np.nan]), dtype=float))))
-    return obj, model, dict(bands=bands, z=z, B=B, bidx=bidx, survey_idx=survey_idx,
-                            seeing_groups=int(seeing_mask.sum()), n_points_with_seeing=n_seeing)
+    return obj, model, dict(bands=bands, z=z, B=B, bidx=bidx, survey_idx=survey_idx)

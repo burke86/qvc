@@ -28,7 +28,7 @@ LUM = {"Hbeta": "L5100", "Halpha": "L5100", "MgII": "L3000", "CIV": "L3000"}
 REF = REFS[line]
 T0 = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import qvcfit  # noqa: E402  (filtered reads, scratch seeing sidecars, shared model construction)
+import qvcfit  # noqa: E402  (filtered reads, shared model construction)
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -46,7 +46,7 @@ from qvc.light_curve.multiband_dho_core import relative_flux_to_mag_residual  # 
 from qvc.spectra.build_local_cache import load_sdss_spec_from_cache, sdss_cache_file_path  # noqa: E402
 
 F = qvcfit.F
-obj, model, meta = qvcfit.build(oid, seeing=True)
+obj, model, meta = qvcfit.build(oid)
 bands, z, B = meta["bands"], meta["z"], meta["B"]
 bidx, survey_idx = meta["bidx"], meta["survey_idx"]
 info = initialize_model(jax.random.PRNGKey(0), model, init_strategy=init_to_median())
@@ -69,7 +69,7 @@ handlers.trace(handlers.substitute(handlers.seed(model, 0), data=constrained)).g
 SL.SharedLatentDiskBLRRelativeFluxModel.log_prob = _orig_log_prob
 m, params = captured["m"], captured["params"]
 
-# Data in model coordinates: survey/seeing offsets removed, converted back to magnitude residuals.
+# Data in model coordinates: survey offsets removed, converted back to magnitude residuals.
 t_sorted, b_sorted = (np.asarray(v) for v in m.X)
 inds = jnp.argsort(jnp.asarray(t_sorted))
 y_corr_rel = np.asarray(m._observed_y_sorted(params, inds))

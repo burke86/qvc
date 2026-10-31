@@ -1,9 +1,8 @@
 #!/bin/sh
-# Wait for the seeing sidecars, then run all objects (3 at a time) and keep the per-line R-L plots current.
+# Run all objects (3 at a time) and keep the per-line R-L plots current.
 R=$(cd "$(dirname "$0")" && pwd)
-S=$R/..
-while [ ! -f $S/seeing/dr16s82_sdssSeeing.parquet ] || [ ! -f $S/seeing/dr16s82_ztfSeeing.parquet ]; do sleep 30; done
-echo "seeing sidecars ready at $(date '+%I:%M %p'); starting fits"
+mkdir -p $R/plots/Halpha $R/plots/Hbeta $R/plots/MgII $R/plots/CIV
+echo "starting fits at $(date '+%I:%M %p')"
 cat $R/job_order.txt | xargs -P 3 -n 1 $R/object_job.sh &
 XPID=$!
 last=""

@@ -8,7 +8,7 @@ This guide covers the data, the model and why it carries lag information, what w
 
 ## 1. Where things stand (October 2026)
 
-We ran MAP + Laplace fits with seeing-dependent nuisance terms on the 60 objects with the highest variability S/N per line (Hα, Hβ, Mg II, C IV; 238 object–line pairs). Results are in `run4_seeing/plots/`.
+We ran MAP + Laplace fits on the 60 objects with the highest variability S/N per line (Hα, Hβ, Mg II, C IV; 238 object–line pairs). That run also fitted seeing-dependent nuisance terms, which we have since dropped from the pipeline; the earlier 30-object Hβ and Mg II runs without them also showed no clear trend. Results are in `run4_seeing/plots/` (local only, see Section 2).
 
 | Line | N | Median offset from reference R–L | Scatter (NMAD) | Lag–L correlation |
 |---|---|---|---|---|
@@ -41,15 +41,14 @@ pip install jaxns speclite astroquery              # nested sampling, filter cur
 - About tinygp: released tinygp 0.3.0 assumes reversible kernels in its default quasisep matrix methods. That is wrong for our causal response chains. QVC's kernel overrides those methods, and we checked it against a dense covariance to about 1e-10, so stock tinygp is fine for this model. The upstream fix is on the branch `fix/nonreversible-quasisep-upstream` in Colin's `tinygp_dev`.
 - Plots use the group style: `plt.style.use(jaxsedfit.mplstyle.style_path())`. Save figures as PDF with no suptitle.
 
-**Memory:** each fitting process uses roughly 1–3 GB. Run at most 3 at a time on a laptop. An earlier run with 6 parallel processes, each loading the full catalog, crashed a laptop. The scripts here read the parquet files filtered to one object, so they never load a full catalog.
+**Memory and time:** across 221 fits, each process peaked at 2.3 GB (median; 2.9 GB max), and one MAP + Laplace fit took about 2.5 minutes. Run at most 3 at a time on a laptop. An earlier run with 6 parallel processes, each loading the full catalog, crashed a laptop. The scripts here read the parquet files filtered to one object, so they never load a full catalog.
 
 **Data and results are not in git.** The repo ignores data files (`*.parquet`, `*.csv`, `*.fits`, `*.pdf`). Get these from Colin and place them at the paths below:
 
 - `data/` (light curves, catalogs, `lc_chisq.csv`, DR16Q FITS);
-- `experiments/blr_lags/seeing/` (seeing sidecars, about 4 MB without the `.seeing-cache` folder). Alternatively, regenerate them with `python -m qvc.light_curve.seeing_enrichment --output-dir experiments/blr_lags/seeing`.
-- `experiments/blr_lags/run4_seeing/{selection.csv,fits/,profiles/,plots/}` (results of the first run, needed only to look at the earlier figures).
+- `experiments/blr_lags/run4_seeing/` (results of the first run: `selection.csv`, `fits/`, `profiles/`, `plots/`; needed only to look at the earlier figures).
 
-The scripts in `run4_seeing/` are committed. Rerun `count_strong.py` to rebuild `chi20_line_fractions.csv`.
+The scripts in `pipeline/` are committed. Rerun `count_strong.py` to rebuild `chi20_line_fractions.csv`.
 
 ---
 
@@ -65,14 +64,13 @@ All paths are relative to the qvc repo root.
 | `data/S82/dr16s82_ZuberLCRaw.parquet` | ZTF PSF light curves, gri (`mag`, `magerr`, `fieldid`, `rcidin`, `flag`) |
 | `data/lc_chisq.csv` | Variability reduced χ² per object (`chi_sq_g`, `chi_sq_all`). **The selection uses `chi_sq_g > 20`.** |
 | `data/dr16q_prop_May01_2024.fits` | DR16Q spectral properties (Wu & Shen 2022). Line arrays such as `HBETA_BR` have 6 entries: [peak λ, 50% flux centroid λ, flux, log L_line, FWHM (km/s), rest EW (Å)]. Match to the catalog on PLATE/MJD/FIBERID. |
-| `experiments/blr_lags/seeing/` | Per-epoch PSF FWHM tables for SDSS (100% of epochs), PS1 and ZTF (~98%). Built with `python -m qvc.light_curve.seeing_enrichment`. The copies in `data/S82/` are tiny stubs; use these. |
 
 **Important: these are PSF-photometry light curves, not difference imaging.** For a resolved host galaxy, the PSF flux includes some host light, and how much depends on the seeing. Two consequences:
 
 1. The host adds a constant flux that dilutes the AGN variability, more strongly in red bands. That breaks the model's power law for variability amplitude versus wavelength (`eta_sigma`).
 2. Epoch-to-epoch seeing changes leak host flux into the light curve as fake variability.
 
-The seeing terms (`--enable_seeing_dependence`) model consequence 2 to first order. Nothing in the current model handles consequence 1. That is why you need to check extendedness (Task B).
+The pipeline models neither. That is why you need to check extendedness (Task B).
 
 **How the light curves are built.** `concat_light_curves` → `populate_sdss_fields` → `make_lc`. Rolling photometric outlier rejection is on by default (±30-day window, at least 8 neighbors). About 20% of points are too isolated to test. Survey offsets and per-survey jitter are fitted.
 
@@ -96,7 +94,7 @@ We model relative flux, r_b(t) = F_b(t)/F̄_b − 1. The magnitude likelihood is
 
 Each Erlang chain is a small linear ODE, so the whole multiband process stays Markovian (26 states for 4 bands). The likelihood then costs O(N) time through tinygp's quasiseparable solver. `use_fast_solver=True` adds a fused scan with a custom adjoint.
 
-Nuisance terms: mean per band, linear trend, survey offsets, per-survey/per-band jitter, and the seeing slopes for mean and scatter.
+Nuisance terms: mean per band, linear trend, survey offsets, and per-survey/per-band jitter.
 
 ### 4.2 Where the lag information comes from
 
@@ -138,9 +136,9 @@ At f_line ≈ 5% (the typical value in our first sample), A_b is degenerate with
 
 ## 5. Inference: MAP + Laplace and the lag profile
 
-Scripts are in `run4_seeing/`.
+Scripts are in `pipeline/`.
 
-- `qvcfit.py`: builds one object's NumPyro model exactly as the pipeline does: outlier rejection, `make_lc`, jitter and survey masks, flux-linearized `shared_latent_blr` with `refinement_iters=1`, fast solver, seeing terms. It reads the parquet files filtered to that object.
+- `qvcfit.py`: builds one object's NumPyro model exactly as the pipeline does: outlier rejection, `make_lc`, jitter and survey masks, flux-linearized `shared_latent_blr` with `refinement_iters=1`, fast solver. It reads the parquet files filtered to that object.
 - `fit_object.py <objectId> <outdir>`:
   - MAP via SciPy L-BFGS-B in coordinates whitened by a finite-difference (FD) Hessian, from 4 starts (median plus 3 perturbations).
   - Laplace covariance from an FD Hessian of the autodiff gradient. `jax.hessian` returns NaN because the fast solver's `custom_vjp` has no forward mode.
@@ -180,7 +178,7 @@ Scripts are in `run4_seeing/`.
 
 ### Task A: build the strong-line sample (χ²_g > 20, line > 20% of band flux)
 
-`run4_seeing/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band.
+`pipeline/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band.
 
 Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **4,494 have a broad line above 20% of the flux in some band:**
 
@@ -213,13 +211,13 @@ For each selected object, get a morphology flag and the host contribution:
 
 Then:
 
-- Plot extendedness against redshift, `qg_fragal`, the fitted seeing slopes (`seeing_mean_slope_active`) and the lag outcomes (offset from R–L, multimodal, edge-pinned).
+- Plot extendedness against redshift, `qg_fragal` and the lag outcomes (offset from R–L, multimodal, edge-pinned).
 - In the first run, low-z Hβ objects were more often edge-pinned (Spearman ρ = −0.43, p = 0.02), probably from host light.
 - Decide on a cut, or fit the extended objects with the PSF-fraction correction (`--subtract_psf_constant_flux` needs the spectra-fit HDF5 PSF fractions). Report R–L results both with and without the extended sources.
 
 ### Task C: Laplace run on the strong-line sample
 
-1. Copy `run4_seeing/` to a new directory (e.g. `run5_strong20/`) and replace `selection.csv`, `unique_ids.txt` and `job_order.txt` with the Task A outputs.
+1. Copy `pipeline/` to a new directory next to it (e.g. `experiments/blr_lags/run5_strong20/`) and add `selection.csv` and `job_order.txt` from Task A. Output folders (`fits/`, `profiles/`, `plots/`, `logs/`) are created on first run.
 2. Run it:
 
    ```bash
@@ -250,16 +248,16 @@ Notes:
 
   ```python
   from numpyro.contrib.nested_sampling import NestedSampler
-  obj, model, meta = qvcfit.build(oid, seeing=True)
+  obj, model, meta = qvcfit.build(oid)
   ns = NestedSampler(model, constructor_kwargs=dict(num_live_points=..., max_samples=...),
                      termination_kwargs=dict(dlogZ=0.1))
   ns.run(jax.random.PRNGKey(0))
   samples = ns.get_samples(jax.random.PRNGKey(1), 4000)   # samples["lag_blr"], etc.
   ```
 
-- **Cost.** There are 54 parameters at about 9 ms per call. Plan for 10⁵–10⁶ likelihood calls per object, which is tens of minutes to hours.
+- **Cost.** There are 34 parameters for a 4-band object, at about 9 ms per likelihood call. Plan for 10⁵–10⁶ likelihood calls per object, which is tens of minutes to hours.
   - Start with 2–3 objects to calibrate `num_live_points` (`align_nested_sampler_num_live_points` in `fit_light_curves.py` gives the default).
-  - If it's too slow, fix the nuisance parameters (survey offsets, jitter, seeing slopes, means) at their MAP values and sample the roughly 10 physical parameters. Check on one object that this doesn't shift the lag.
+  - If it's too slow, fix the nuisance parameters (survey offsets, jitter, means) at their MAP values and sample the roughly 10 physical parameters. Check on one object that this doesn't shift the lag.
 - **Compare with the Laplace profile.** Check that the NS lag marginal matches the Laplace-profile posterior in median, interval and number of modes. Compute the Bayes factor between the full model and the model with the BLR amplitude set to zero (the evidence comes free with NS). A real detection should have ln BF ≳ 3.
 - **Save results.** Write `ns/<oid>.npz` (samples, log Z, its error) and add a column to the results CSV so the R–L plot can mark NS-confirmed points.
 
@@ -288,12 +286,12 @@ One summary figure should show how the selection (variability only → line frac
 ```
 experiments/blr_lags/
   README.md                 this file
-  first_run_diagnostics/    lag_roles.csv (disk vs BLR lag roles), outcome_correlates.csv (first no-seeing run)
-  seeing/                   PSF FWHM sidecars + coverage tables + manifest
-  run4_seeing/              scripts and results of the 4-line, 60-object seeing run
+  pipeline/                 committed scripts; copy this folder for each new run
     qvcfit.py fit_object.py lag_profile.py diagnostic_figure.py analyze_line.py
     object_job.sh driver.sh
     line_ew.py strong_lines.py strong10_plot.py count_strong.py
+  first_run_diagnostics/    (local) lag_roles.csv, outcome_correlates.csv from the first 30+30 run
+  run4_seeing/              (local) results of the 4-line, 60-object run (fitted with seeing terms)
     selection.csv line_props.csv chi20_line_fractions.csv
     fits/ profiles/ plots/<line>/   (per-object diagnostics, R–L plots, summaries)
 ```

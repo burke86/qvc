@@ -1,4 +1,4 @@
-"""MAP + Laplace fit of one S82 quasar with the default QVC model (shared_latent_blr), seeing terms on.
+"""MAP + Laplace fit of one S82 quasar with the default QVC model (shared_latent_blr).
 
 Input preparation mirrors fit_light_curves.main() (concat_light_curves ->
 populate_sdss_fields -> make_lc -> jitter grids -> flux-linearized model with
@@ -6,7 +6,7 @@ refinement_iters=1), using the fused fast solver. MAP: 4 starts (init_to_median 
 3 unconstrained perturbations), each L-BFGS-B in coordinates whitened by a
 finite-difference Hessian at the start. Every start's optimum and lags are kept
 so multimodality is visible. Laplace: FD Hessian at the best optimum.
-Usage: python laplace_object.py <objectId> <outdir>
+Usage: python fit_object.py <objectId> <outdir>
 """
 
 from pathlib import Path
@@ -21,7 +21,7 @@ import pandas as pd
 oid, outdir = sys.argv[1], sys.argv[2]
 T_START = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import qvcfit  # noqa: E402  (filtered reads, scratch seeing sidecars, shared model construction)
+import qvcfit  # noqa: E402  (filtered reads, shared model construction)
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -30,7 +30,7 @@ from numpyro.infer import init_to_median  # noqa: E402
 from numpyro.infer.util import initialize_model  # noqa: E402
 from scipy.optimize import minimize  # noqa: E402
 
-obj, model, meta = qvcfit.build(oid, seeing=True)
+obj, model, meta = qvcfit.build(oid)
 bands, z, B, bidx = meta["bands"], meta["z"], meta["B"], meta["bidx"]
 t_load = time.time() - T_START
 
@@ -101,7 +101,7 @@ lag = np.array([s["lag_rest"] for s in S])
 frac = np.array([s["blr_fraction"] for s in S]) if "blr_fraction" in S[0] else None
 tau = np.array([s.get("log_tau_uv", np.nan) for s in S])
 
-# Distinct modes: optima whose r-band-independent lag vectors differ by > 0.1 dex in any band.
+# Distinct modes: optima whose lag vectors differ by > 0.1 dex in any band.
 modes = []
 for o in sorted(finite, key=lambda o: o["U"]):
     ll = np.log10(np.asarray(o["lag_rest"]))
@@ -117,7 +117,7 @@ row = dict(
     blr_fraction_q50=(np.quantile(frac, 0.5, axis=0).tolist() if frac is not None else None),
     log_tau_uv_q16=float(np.nanquantile(tau, 0.16)), log_tau_uv_q50=float(np.nanquantile(tau, 0.5)),
     log_tau_uv_q84=float(np.nanquantile(tau, 0.84)),
-    n_modes=len(modes), seeing_groups=meta["seeing_groups"], n_points_with_seeing=meta["n_points_with_seeing"],
+    n_modes=len(modes),
     modes=[dict(U=m["U"], dU=m["U"] - best["U"], lag_rest=m["lag_rest"], blr_fraction=m.get("blr_fraction"),
                 log_tau_uv=m.get("log_tau_uv")) for m in modes],
     starts=[dict(U=o["U"], nfev=o["nfev"], seconds=o["seconds"], lag_rest=o["lag_rest"]) for o in optima],

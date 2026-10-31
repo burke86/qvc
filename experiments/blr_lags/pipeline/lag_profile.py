@@ -23,7 +23,7 @@ import pandas as pd
 oid, line_band, map_npz, outdir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 T0 = time.time()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import qvcfit  # noqa: E402  (filtered reads, scratch seeing sidecars, shared model construction)
+import qvcfit  # noqa: E402  (filtered reads, shared model construction)
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -35,7 +35,7 @@ from numpyro.infer.util import initialize_model  # noqa: E402
 from scipy.optimize import minimize  # noqa: E402
 
 F = qvcfit.F
-obj, model, meta = qvcfit.build(oid, seeing=True)
+obj, model, meta = qvcfit.build(oid)
 bands, z, B = meta["bands"], meta["z"], meta["B"]
 b = bands.index(line_band)
 info = initialize_model(jax.random.PRNGKey(0), model, init_strategy=init_to_median())
