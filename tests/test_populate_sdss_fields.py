@@ -13,7 +13,12 @@ os.chdir(SRC)
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from qvc.light_curve.multiband_generate_lc import populate_sdss_fields
+from qvc.light_curve import multiband_generate_lc
+from qvc.light_curve.multiband_generate_lc import (
+    DR16Q_POPULATE_COLUMNS,
+    load_dr16q_populate_columns,
+    populate_sdss_fields,
+)
 
 
 def _build_catalog_table():
@@ -79,6 +84,11 @@ def _mock_table_read(monkeypatch, cat, dr16q):
         raise AssertionError(f"Unexpected path: {path}")
 
     monkeypatch.setattr("qvc.light_curve.multiband_generate_lc.Table.read", fake_read)
+    # Bypass the on-disk DR16Q column cache so the mocked table is what gets matched.
+    monkeypatch.setattr(
+        "qvc.light_curve.multiband_generate_lc.load_dr16q_populate_columns",
+        lambda path: fake_read(path, hdu=1),
+    )
     return calls
 
 
@@ -197,3 +207,60 @@ def test_stone_redshift_survives_enrichment(monkeypatch):
     result = populate_sdss_fields([obj], preserve_stone_redshift=True)[0]
     assert result['z'] == 0.51
     assert result['catalog_z'] == 0.5
+
+
+def _write_dr16q_fits(path, table=None):
+    table = _build_dr16q_table() if table is None else table
+    table["UNUSED_WIDE_COLUMN"] = np.zeros((len(table), 50))
+    table.write(path, format="fits", overwrite=True)
+    # The reference is what the uncached path returns: Table.read of the FITS.
+    return Table.read(path, hdu=1)
+
+
+def _assert_tables_equal(expected, actual):
+    assert actual.colnames == list(DR16Q_POPULATE_COLUMNS)
+    for name in DR16Q_POPULATE_COLUMNS:
+        expected_values = [np.asarray(expected[name])[i] for i in range(len(expected))]
+        actual_values = [np.asarray(actual[name])[i] for i in range(len(actual))]
+        assert actual_values == expected_values
+        assert [type(v) for v in actual_values] == [type(v) for v in expected_values]
+
+
+def test_dr16q_column_cache_written_and_reused(tmp_path, monkeypatch):
+    fits_path = tmp_path / "dr16q_prop.fits"
+    expected = _write_dr16q_fits(fits_path)
+    cache_path = tmp_path / "dr16q_prop_populate_columns.parquet"
+
+    first = load_dr16q_populate_columns(fits_path)
+    assert cache_path.exists()
+    _assert_tables_equal(expected, first)
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("FITS should not be re-read when the cache is current")
+
+    monkeypatch.setattr(multiband_generate_lc.Table, "read", fail_read)
+    _assert_tables_equal(expected, load_dr16q_populate_columns(fits_path))
+
+
+def test_dr16q_column_cache_rebuilt_when_fits_is_newer(tmp_path):
+    fits_path = tmp_path / "dr16q_prop.fits"
+    _write_dr16q_fits(fits_path)
+    load_dr16q_populate_columns(fits_path)
+    cache_path = tmp_path / "dr16q_prop_populate_columns.parquet"
+
+    updated = _build_dr16q_table()
+    updated["Z_SYS"][0] = 0.75
+    updated = _write_dr16q_fits(fits_path, updated)
+    newer = cache_path.stat().st_mtime + 10
+    os.utime(fits_path, (newer, newer))
+
+    _assert_tables_equal(updated, load_dr16q_populate_columns(fits_path))
+
+
+def test_dr16q_column_cache_used_without_fits(tmp_path):
+    fits_path = tmp_path / "dr16q_prop.fits"
+    expected = _write_dr16q_fits(fits_path)
+    load_dr16q_populate_columns(fits_path)
+    fits_path.unlink()
+
+    _assert_tables_equal(expected, load_dr16q_populate_columns(fits_path))
