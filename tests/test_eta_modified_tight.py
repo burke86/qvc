@@ -39,7 +39,7 @@ def object_data():
 
 
 @pytest.mark.parametrize("name,loc,low,high", [
-    ("eta_sigma", -.8, -1.5, 0.), ("eta_tau", .5, 0., 1.5),
+    ("eta_sigma", -.8, -1.5, 0.),
 ])
 def test_distribution_matches_normalized_scipy_and_support(name, loc, low, high):
     prior = getattr(fit, f"{name}_prior")(PROFILE)
@@ -66,18 +66,17 @@ def test_distribution_matches_normalized_scipy_and_support(name, loc, low, high)
     assert np.isfinite(jax.grad(prior.log_prob)(jnp.asarray(loc)))
 
 
-@pytest.mark.parametrize("variant", ["shared_latent_blr", "mag_flux_linearized_erlang"])
 @pytest.mark.parametrize("explicit", [False, True])
-def test_inference_and_kl_use_the_selected_truncated_profile(variant, explicit):
+def test_inference_and_kl_use_the_selected_truncated_profile(explicit):
     obj, lam = object_data()
-    shared = variant == "shared_latent_blr"
+    variant = "shared_latent_blr"
     profile_kwargs = {"eta_prior_profile": PROFILE} if explicit else {}
-    kwargs = dict(disable_linear_trend=True, erlang_order=1, **profile_kwargs)
+    kwargs = dict(disable_linear_trend=True, blr_order=1, **profile_kwargs)
     model = fit.build_single_object_model_mag_flux_linearized(
-        obj, lam, None, shared_latent=shared, disk_order=1, **kwargs)
+        obj, lam, None, disk_order=1, **kwargs)
     sites = fit.trace(fit.seed(model, jax.random.PRNGKey(4))).get_trace()
-    names = ["eta_sigma"] if shared else ["eta_sigma", "eta_tau"]
-    assert ("eta_tau" in sites) == (not shared)
+    names = ["eta_sigma"]
+    assert "eta_tau" not in sites
     for name in names:
         prior = sites[name]["fn"]
         expected = getattr(fit, f"{name}_prior")(PROFILE)
@@ -88,18 +87,16 @@ def test_inference_and_kl_use_the_selected_truncated_profile(variant, explicit):
            if v["type"] in {"sample", "deterministic"} and not v.get("is_observed", False)}
     draws = {k: np.stack([v] * 32) for k, v in raw.items()}
     draws["eta_sigma"] = np.linspace(-1., -.6, 32)
-    if not shared:
-        draws["eta_tau"] = np.linspace(.2, .8, 32)
     explicit = fit.add_model_prediction_params(draws, lam, model_variant=variant, disk_order=1)
     flat = utils.flatten_flat_samples_per_band(explicit, obj["bands"], obj["survey_names"])
     result = fit.compute_parameter_kls(flat, bands=obj["bands"], survey_names=obj["survey_names"],
         t_ref=obj["X"][0], z=obj["z"], lambda_center_rf=float(raw["lambda_center_rf"]),
         log_jitter_mean=np.full((2, 3), -4.), model_variant=variant,
         disable_linear_trend=True, **profile_kwargs)
-    assert ("eta_tau_kl" in result) == (not shared)
+    assert "eta_tau_kl" not in result
     for name in names:
         x = draws[name]
-        loc, low, high = (-.8, -1.5, 0.) if name == "eta_sigma" else (.5, 0., 1.5)
+        loc, low, high = -.8, -1.5, 0.
         prior = truncnorm((low-loc)/.25, (high-loc)/.25, loc=loc, scale=.25)
         variance = x.var(ddof=1) + 1e-12
         log_q = -.5 * np.log(2*np.pi*variance) - .5 * (x-x.mean())**2 / variance
@@ -107,7 +104,7 @@ def test_inference_and_kl_use_the_selected_truncated_profile(variant, explicit):
 
 
 @pytest.mark.parametrize("flag", ["--eta_prior_profile", "--eta-prior-profile"])
-@pytest.mark.parametrize("variant", ["shared_latent_blr", "mag_flux_linearized_erlang"])
+@pytest.mark.parametrize("variant", ["shared_latent_blr"])
 @pytest.mark.parametrize("profile", [None, "default", "relaxed", "modified"])
 def test_cli_accepts_profile_without_running_fit(monkeypatch, flag, variant, profile):
     class Parsed(Exception):
@@ -124,7 +121,7 @@ def test_cli_accepts_profile_without_running_fit(monkeypatch, flag, variant, pro
         fit.main()
 
 
-@pytest.mark.parametrize("name", ["eta_sigma", "eta_tau"])
+@pytest.mark.parametrize("name", ["eta_sigma"])
 def test_default_helpers_match_tight_and_reject_retired_name(name):
     helper = getattr(fit, f"{name}_prior")
     default, explicit = helper(), helper(PROFILE)

@@ -54,7 +54,6 @@ def fit_object(index, object_id):
     command = [
         sys.executable,
         "-m", "qvc.light_curve.fit_light_curves",
-        #"--dho_drw_parameterization",
         "--filter_object_id", object_id,
         "--progress",
         "--outlier_half_window_days", "60",
@@ -65,7 +64,7 @@ def fit_object(index, object_id):
         "--nchains", "3",
         "--max_tree_depth", "8",
         "--target_accept", "0.7",
-        "--model_variant","shared_latent_blr", #"mag_flux_linearized_erlang",
+        "--model_variant","shared_latent_blr",
         "--flux_linearized_refinement_iters", "2",
         "--disk_order", "2",
         "--flux_linearized_refinement_strategy", "svi_then_nuts",

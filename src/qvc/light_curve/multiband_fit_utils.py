@@ -874,7 +874,7 @@ def process_samples(
     bands,
     percentiles=[16, 50, 84],
     *,
-    model_variant=None,
+    model_variant="shared_latent_blr",
     disk_order=3,
     erlang_order=3,
 ):
@@ -920,7 +920,7 @@ def process_samples(
 
     # per flat param computation
     for k, v in flat_samples.items():
-        if model_variant == "shared_latent_blr" and k == "eta_tau":
+        if k == "eta_tau":
             continue
         if k in internal_skip_keys or any(k.startswith(prefix) for prefix in internal_skip_prefixes):
             continue
@@ -937,95 +937,75 @@ def process_samples(
     # generalized per-band computation
     # Power Law Params
     log_sigma_uv = np.asarray(flat_samples["log_sigma_uv"]) if "log_sigma_uv" in flat_samples else None
-    shared_latent = model_variant == "shared_latent_blr"
+    if model_variant != "shared_latent_blr":
+        raise ValueError(f"Unsupported model_variant {model_variant!r}; only 'shared_latent_blr' is available.")
     log_tau_uv = np.asarray(flat_samples["log_tau_uv"]) if "log_tau_uv" in flat_samples else None
-    log_tau_fast_uv = np.asarray(flat_samples["log_tau_fast_uv"]) if "log_tau_fast_uv" in flat_samples else None
-    has_fast_pole = log_tau_fast_uv is not None
     eta_sigma = np.asarray(flat_samples["eta_sigma"])
-    eta_tau = None if shared_latent else np.asarray(flat_samples["eta_tau"])
     lambda_ref = 2500
     lam_ref_arr = np.full_like(eta_sigma, lambda_ref, dtype=float)
 
-    if shared_latent:
-        from qvc.light_curve.multiband_model_shared_latent_blr import (
-            continuum_effective_timescale,
-        )
+    from qvc.light_curve.multiband_model_shared_latent_blr import (
+        continuum_effective_timescale,
+    )
 
-        required = ("tau_fast_driver", "tau_slow_driver", "lag0")
-        missing = [key for key in required if key not in flat_samples]
-        if missing:
-            raise KeyError(
-                "Missing shared-latent samples required for the 2500 A "
-                f"continuum timescale: {missing}."
-            )
-        tau_fast_driver = np.asarray(flat_samples["tau_fast_driver"], dtype=float)
-        tau_slow_driver = np.asarray(flat_samples["tau_slow_driver"], dtype=float)
-        lag0_draws = np.asarray(flat_samples["lag0"], dtype=float)
-        lag_disk_2500 = lag0_draws * (2500.0 / lambda_center_rf) ** (4.0 / 3.0)
-        effective_tau_uv_obs = np.asarray(
-            jax.jit(
-                jax.vmap(
-                    lambda tf, ts, lag: continuum_effective_timescale(
-                        tf,
-                        ts,
-                        lag,
-                        disk_order=int(disk_order),
-                    )
+    required = ("tau_fast_driver", "tau_slow_driver", "lag0")
+    missing = [key for key in required if key not in flat_samples]
+    if missing:
+        raise KeyError(
+            "Missing shared-latent samples required for the 2500 A "
+            f"continuum timescale: {missing}."
+        )
+    tau_fast_driver = np.asarray(flat_samples["tau_fast_driver"], dtype=float)
+    tau_slow_driver = np.asarray(flat_samples["tau_slow_driver"], dtype=float)
+    lag0_draws = np.asarray(flat_samples["lag0"], dtype=float)
+    lag_disk_2500 = lag0_draws * (2500.0 / lambda_center_rf) ** (4.0 / 3.0)
+    effective_tau_uv_obs = np.asarray(
+        jax.jit(
+            jax.vmap(
+                lambda tf, ts, lag: continuum_effective_timescale(
+                    tf,
+                    ts,
+                    lag,
+                    disk_order=int(disk_order),
                 )
-            )(
-                jnp.asarray(tau_fast_driver),
-                jnp.asarray(tau_slow_driver),
-                jnp.asarray(lag_disk_2500),
             )
+        )(
+            jnp.asarray(tau_fast_driver),
+            jnp.asarray(tau_slow_driver),
+            jnp.asarray(lag_disk_2500),
         )
-        log_tau_uv = np.log(effective_tau_uv_obs)
-        log_tau_driver_rf = np.log10(tau_fast_driver + tau_slow_driver) - np.log10(
-            1.0 + data["z"]
-        )
-        log_tau_driver_fast_rf = np.log10(tau_fast_driver) - np.log10(1.0 + data["z"])
-        log_tau_driver_slow_rf = np.log10(tau_slow_driver) - np.log10(1.0 + data["z"])
+    )
+    log_tau_uv = np.log(effective_tau_uv_obs)
+    log_tau_driver_rf = np.log10(tau_fast_driver + tau_slow_driver) - np.log10(
+        1.0 + data["z"]
+    )
+    log_tau_driver_fast_rf = np.log10(tau_fast_driver) - np.log10(1.0 + data["z"])
+    log_tau_driver_slow_rf = np.log10(tau_slow_driver) - np.log10(1.0 + data["z"])
 
     if "eta_sigma" not in result:
         result["eta_sigma"], result["eta_sigma_err"] = sym_percentile(eta_sigma)
-    if not shared_latent and "eta_tau" not in result:
-        result["eta_tau"], result["eta_tau_err"] = sym_percentile(eta_tau)
 
     if "log_sigma_uv" not in result:
         result["log_sigma_uv"], result["log_sigma_uv_err"] = sym_percentile(log_sigma_uv / np.log(10))
     if "log_sigma_fast_uv" not in result:
         result["log_sigma_fast_uv"], result["log_sigma_fast_uv_err"] = sym_percentile(log_sigma_uv / np.log(10))
-    if shared_latent:
-        # Always replace any legacy/base-driver value carried by input samples.
-        # Under this model variant the public quantity is the synthetic,
-        # continuum-only 2500 A integral-correlation timescale.
-        result["log_tau_uv"], result["log_tau_uv_err"] = sym_percentile(
-            log_tau_uv / np.log(10)
-        )
-    elif "log_tau_uv" not in result:
-        result["log_tau_uv"], result["log_tau_uv_err"] = sym_percentile(log_tau_uv / np.log(10))
-    if has_fast_pole and not shared_latent and "log_tau_fast_uv" not in result:
-        result["log_tau_fast_uv"], result["log_tau_fast_uv_err"] = sym_percentile(log_tau_fast_uv / np.log(10))
+    # Always replace any legacy/base-driver value carried by input samples.
+    # Under this model variant the public quantity is the synthetic,
+    # continuum-only 2500 A integral-correlation timescale.
+    result["log_tau_uv"], result["log_tau_uv_err"] = sym_percentile(
+        log_tau_uv / np.log(10)
+    )
     samples_log_tau_uv_rf = log_tau_uv / np.log(10) - np.log10(1 + data['z'])
-    if not shared_latent:
-        samples_log_tau_uv_rf = samples_log_tau_uv_rf + log_single_pl(
-            lambda_ref,
-            lam_ref_arr,
-            eta_tau,
-        )
     result["log_tau_uv_rf"], result["log_tau_uv_rf_err"] = sym_percentile(samples_log_tau_uv_rf)
-    if has_fast_pole and not shared_latent:
-        samples_log_tau_fast_uv_rf = log_tau_fast_uv / np.log(10) - np.log10(1 + data['z']) + log_single_pl(lambda_ref, lam_ref_arr, eta_tau)
-        result["log_tau_fast_uv_rf"], result["log_tau_fast_uv_rf_err"] = sym_percentile(samples_log_tau_fast_uv_rf)
-    if shared_latent:
-        result["log_tau_driver_rf"], result["log_tau_driver_rf_err"] = sym_percentile(
-            log_tau_driver_rf
-        )
-        result["log_tau_driver_fast_rf"], result["log_tau_driver_fast_rf_err"] = sym_percentile(
-            log_tau_driver_fast_rf
-        )
-        result["log_tau_driver_slow_rf"], result["log_tau_driver_slow_rf_err"] = sym_percentile(
-            log_tau_driver_slow_rf
-        )
+    result["log_tau_driver_rf"], result["log_tau_driver_rf_err"] = sym_percentile(
+        log_tau_driver_rf
+    )
+    result["log_tau_driver_fast_rf"], result["log_tau_driver_fast_rf_err"] = sym_percentile(
+        log_tau_driver_fast_rf
+    )
+    result["log_tau_driver_slow_rf"], result["log_tau_driver_slow_rf_err"] = sym_percentile(
+        log_tau_driver_slow_rf
+    )
 
     log_sigma_band = []
     for band in bands:
@@ -1034,98 +1014,79 @@ def process_samples(
         log_sigma_band.append(val)
     log_sigma_band = np.array(log_sigma_band).T
 
-    log_tau_band = None
-    if not shared_latent:
-        log_tau_band = []
-        for band in bands:
-            lam_eff = lambda_pivot[band] / (1 + data['z'])
-            val = log_tau_uv / np.log(10) - np.log10(1 + data['z']) + log_single_pl(lam_eff, lam_ref_arr, eta_tau)
-            log_tau_band.append(val)
-        log_tau_band = np.array(log_tau_band).T
+    from qvc.light_curve.multiband_model_shared_latent_blr import (
+        SharedLatentDiskBLRQS,
+    )
 
-    if model_variant == "shared_latent_blr":
-        from qvc.light_curve.multiband_model_shared_latent_blr import (
-            SharedLatentDiskBLRQS,
-        )
-
-        required = [
-            "tau_fast_driver",
-            "tau_slow_driver",
-            *(f"lag_disk_{band}" for band in bands),
-            *(f"lag_blr_{band}" for band in bands),
-            *(f"amp_cont_relflux_{band}" for band in bands),
-            *(f"amp_blr_relflux_{band}" for band in bands),
-        ]
-        missing = [key for key in required if key not in flat_samples]
-        if missing:
-            raise KeyError(
-                "Missing shared-latent samples required for effective tau: "
-                + ", ".join(missing)
-            )
-
-        tau_fast_draws = np.asarray(flat_samples["tau_fast_driver"])
-        tau_slow_draws = np.asarray(flat_samples["tau_slow_driver"])
-        lag_disk_draws = np.column_stack(
-            [np.asarray(flat_samples[f"lag_disk_{band}"]) for band in bands]
-        )
-        lag_blr_draws = np.column_stack(
-            [np.asarray(flat_samples[f"lag_blr_{band}"]) for band in bands]
-        )
-        amp_cont_draws = np.column_stack(
-            [np.asarray(flat_samples[f"amp_cont_relflux_{band}"]) for band in bands]
-        )
-        amp_blr_draws = np.column_stack(
-            [np.asarray(flat_samples[f"amp_blr_relflux_{band}"]) for band in bands]
+    required = [
+        "tau_fast_driver",
+        "tau_slow_driver",
+        *(f"lag_disk_{band}" for band in bands),
+        *(f"lag_blr_{band}" for band in bands),
+        *(f"amp_cont_relflux_{band}" for band in bands),
+        *(f"amp_blr_relflux_{band}" for band in bands),
+    ]
+    missing = [key for key in required if key not in flat_samples]
+    if missing:
+        raise KeyError(
+            "Missing shared-latent samples required for effective tau: "
+            + ", ".join(missing)
         )
 
-        def band_moments_one(
-            tau_fast, tau_slow, lag_disk, lag_blr, amp_cont, amp_blr
-        ):
-            kernel = SharedLatentDiskBLRQS(
-                tau_fast=jnp.atleast_1d(tau_fast),
-                tau_slow=jnp.atleast_1d(tau_slow),
-                lag_disk=lag_disk,
-                lag_blr=lag_blr,
-                amp_cont=amp_cont,
-                amp_blr=amp_blr,
-                disk_order=int(disk_order),
-                blr_order=int(erlang_order),
-            )
-            return (
-                kernel.effective_timescales(),
-                kernel.stationary_rms(),
-                kernel.continuum_effective_timescales(),
-            )
+    tau_fast_draws = np.asarray(flat_samples["tau_fast_driver"])
+    tau_slow_draws = np.asarray(flat_samples["tau_slow_driver"])
+    lag_disk_draws = np.column_stack(
+        [np.asarray(flat_samples[f"lag_disk_{band}"]) for band in bands]
+    )
+    lag_blr_draws = np.column_stack(
+        [np.asarray(flat_samples[f"lag_blr_{band}"]) for band in bands]
+    )
+    amp_cont_draws = np.column_stack(
+        [np.asarray(flat_samples[f"amp_cont_relflux_{band}"]) for band in bands]
+    )
+    amp_blr_draws = np.column_stack(
+        [np.asarray(flat_samples[f"amp_blr_relflux_{band}"]) for band in bands]
+    )
 
-        effective_tau_obs, total_rms_relflux, continuum_tau_obs = (
-            np.asarray(value)
-            for value in jax.jit(jax.vmap(band_moments_one))(
-                jnp.asarray(tau_fast_draws),
-                jnp.asarray(tau_slow_draws),
-                jnp.asarray(lag_disk_draws),
-                jnp.asarray(lag_blr_draws),
-                jnp.asarray(amp_cont_draws),
-                jnp.asarray(amp_blr_draws),
-            )
+    def band_moments_one(
+        tau_fast, tau_slow, lag_disk, lag_blr, amp_cont, amp_blr
+    ):
+        kernel = SharedLatentDiskBLRQS(
+            tau_fast=jnp.atleast_1d(tau_fast),
+            tau_slow=jnp.atleast_1d(tau_slow),
+            lag_disk=lag_disk,
+            lag_blr=lag_blr,
+            amp_cont=amp_cont,
+            amp_blr=amp_blr,
+            disk_order=int(disk_order),
+            blr_order=int(erlang_order),
         )
-        log_tau_band = np.log10(effective_tau_obs) - np.log10(1.0 + data["z"])
-        log_tau_cont_band_rf = np.log10(continuum_tau_obs) - np.log10(
-            1.0 + data["z"]
-        )
-        log_sigma_total_rms_band = np.log10(
-            total_rms_relflux * (2.5 / np.log(10.0))
+        return (
+            kernel.effective_timescales(),
+            kernel.stationary_rms(),
+            kernel.continuum_effective_timescales(),
         )
 
-    log_tau_fast_band = None
-    if has_fast_pole and not shared_latent:
-        fast_by_band = []
-        for band in bands:
-            lam_eff = lambda_pivot[band] / (1 + data['z'])
-            val = log_tau_fast_uv / np.log(10) - np.log10(1 + data['z']) + log_single_pl(lam_eff, lam_ref_arr, eta_tau)
-            fast_by_band.append(val)
-        log_tau_fast_band = np.array(fast_by_band).T
+    effective_tau_obs, total_rms_relflux, continuum_tau_obs = (
+        np.asarray(value)
+        for value in jax.jit(jax.vmap(band_moments_one))(
+            jnp.asarray(tau_fast_draws),
+            jnp.asarray(tau_slow_draws),
+            jnp.asarray(lag_disk_draws),
+            jnp.asarray(lag_blr_draws),
+            jnp.asarray(amp_cont_draws),
+            jnp.asarray(amp_blr_draws),
+        )
+    )
+    log_tau_band = np.log10(effective_tau_obs) - np.log10(1.0 + data["z"])
+    log_tau_cont_band_rf = np.log10(continuum_tau_obs) - np.log10(
+        1.0 + data["z"]
+    )
+    log_sigma_total_rms_band = np.log10(
+        total_rms_relflux * (2.5 / np.log(10.0))
+    )
 
-    # Both retained continuum kernels normalize amp_cont to stationary RMS.
+    # The continuum kernel normalizes amp_cont to stationary RMS.
     sigma_rms_band = np.asarray(log_sigma_band)
 
     for i, band in enumerate(bands):
@@ -1135,20 +1096,14 @@ def process_samples(
         median, err = sym_percentile(sigma_rms_band[:, i])
         result[f"log_sigma_rms_band_{band}"] = median
         result[f"log_sigma_rms_band_{band}_err"] = err
-        if model_variant == "shared_latent_blr":
-            median, err = sym_percentile(log_sigma_total_rms_band[:, i])
-            result[f"log_sigma_total_rms_band_{band}"] = median
-            result[f"log_sigma_total_rms_band_{band}_err"] = err
+        median, err = sym_percentile(log_sigma_total_rms_band[:, i])
+        result[f"log_sigma_total_rms_band_{band}"] = median
+        result[f"log_sigma_total_rms_band_{band}_err"] = err
         median, err = sym_percentile(log_tau_band[:, i])
         result[f"log_tau_band_{band}_RF"] = median
         result[f"log_tau_band_{band}_RF_err"] = err
-        if model_variant == "shared_latent_blr":
-            result[f"log_tau_effective_{band}_RF"] = median
-            result[f"log_tau_effective_{band}_RF_err"] = err
-        if has_fast_pole and not shared_latent:
-            median, err = sym_percentile(log_tau_fast_band[:, i])
-            result[f"log_tau_fast_band_{band}_RF"] = median
-            result[f"log_tau_fast_band_{band}_RF_err"] = err
+        result[f"log_tau_effective_{band}_RF"] = median
+        result[f"log_tau_effective_{band}_RF_err"] = err
         lag_disk_key = f"lag_disk_{band}"
         if lag_disk_key in flat_samples:
             lag_disk = np.asarray(flat_samples[lag_disk_key], dtype=float)
@@ -1207,8 +1162,6 @@ def process_samples(
     print("Hubble covariance term: ", cov_log_sigma_tau_reg)
     print("Hubble std terms: ", np.sqrt(vx), np.sqrt(vy))
 
-    if not shared_latent:
-        log_tau_cont_band_rf = log_tau_band
 
     result[LIGHT_CURVE_POSTERIOR_DRAW_PAYLOAD_KEY] = (
         compact_log_sigma_tau_posterior_draws(
@@ -1226,7 +1179,7 @@ def process_samples(
             redshift=data["z"],
             object_id=data["object_id"],
             selection_seed=0,
-            disk_order=int(disk_order) if shared_latent else 0,
+            disk_order=int(disk_order),
         )
     )
 

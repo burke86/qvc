@@ -1178,7 +1178,7 @@ def test_build_single_object_model_mag_flux_linearized_rejects_second_blr_term()
         dtype=float,
     )
 
-    with pytest.raises(ValueError, match=r"mag_flux_linearized.*n_blr_terms=1"):
+    with pytest.raises(ValueError, match=r"shared_latent_blr.*n_blr_terms=1"):
         build_single_object_model_mag_flux_linearized(
             obj,
             lam_rf,
@@ -1214,8 +1214,7 @@ def test_flux_linearized_erlang_uses_independent_per_band_blr_lags():
         log_jitter_mean,
         disable_lag_bc=True,
         n_blr_terms=1,
-        use_erlang=True,
-        erlang_order=2,
+        blr_order=2,
     )
 
     model_trace = trace(seed(model, random.PRNGKey(91))).get_trace()

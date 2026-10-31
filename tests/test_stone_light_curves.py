@@ -68,15 +68,14 @@ def test_stone_filter_before_slice(stone_file):
         assert loader.load_stone_lcs(N=0) == []
 
 
-@pytest.mark.parametrize('variant', ['erlang', 'shared_latent'])
-def test_stone_four_surveys_reach_model_and_output(stone_file, variant):
+def test_stone_four_surveys_reach_model_and_output(stone_file):
     from numpyro.handlers import seed, trace
     from qvc.light_curve.multiband_fit_utils import flatten_flat_samples_per_band
     with pytest.warns(UserWarning):
         obj = loader.load_stone_lcs(N=1)[0]
     obj.update(fit.make_lc(obj, list('gri'), verbose=False))
     lam = np.array([loader.lambda_pivot[b] / (1 + obj['z']) for b in 'gri'])
-    model = fit.build_single_object_model_mag_flux_linearized(obj, lam, None, shared_latent=variant == 'shared_latent')
+    model = fit.build_single_object_model_mag_flux_linearized(obj, lam, None)
     sites = trace(seed(model, 4)).get_trace()
     observed = [site for site in sites.values() if site['type'] == 'sample' and site.get('is_observed')]
     assert observed

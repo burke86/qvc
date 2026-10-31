@@ -213,8 +213,7 @@ normalized autocorrelation function, not a fitted response centroid. The same
 value is also written as `log_tau_effective_<band>_RF`.
 
 Seeing-dependent photometric contamination can be enabled with
-`--enable_seeing_dependence` for any GP choice, including
-`shared_latent_blr` and the CARMA(2,1) parameterization. For each band/survey
+`--enable_seeing_dependence`. For each band/survey
 combination with at least three usable epoch-level PSF-FWHM measurements and
 nonzero seeing range, this fits both a centered mean-flux slope and a
 seeing-dependent extra-scatter slope. It is disabled by default.

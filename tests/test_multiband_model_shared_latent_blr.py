@@ -256,7 +256,6 @@ def test_shared_latent_fit_uses_convolved_disk_wavelength_law():
         obj,
         lam_rf,
         np.full((3, 3), -4.0),
-        shared_latent=True,
         disk_order=4,
     )
     sites = trace(seed(model, jax.random.PRNGKey(3))).get_trace()

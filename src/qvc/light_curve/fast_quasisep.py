@@ -9,10 +9,9 @@ Computes exactly the same value as ``GaussianProcess(kernel, X, diag=...)
 - points with an exactly-zero time gap (simultaneous multiband observations)
   take a gemm-free branch — the transition is the identity there and carries
   no parameter gradient;
-- for ``ErlangResponseDHOQS`` the batched transition build uses a single
-  static-index scatter (``erlang_transitions``) whose reverse pass is one
-  gather, replacing the per-point ``.at[].set`` assembly whose batched VJP
-  dominated the construction gradient.
+- kernels that define ``batched_transitions(dt)`` (``SharedLatentDiskBLRQS``)
+  build all transition matrices in one vectorized pass instead of
+  ``vmap(kernel.transition_matrix)``.
 
 Agreement with the tinygp path is ~1e-12 relative in value and ~1e-8 in
 gradients (see ``tests/test_fast_quasisep.py``).
@@ -26,11 +25,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["fused_log_probability", "scan_loglike", "erlang_transitions"]
+__all__ = ["fused_log_probability", "scan_loglike"]
 
 
 def _driver_to_chain_columns_horner(dt, lam, e_lam, q, eq, sign, order):
-    """Equivalent of ``ErlangResponseDHOQS._driver_to_chain_columns``.
+    """Driver-to-Erlang-chain transition columns, evaluated by Horner's rule.
 
     Same two-branch closed form (series for |zt| <= 1, partial-sum difference
     otherwise), but the series is evaluated by Horner recursion and the integer
@@ -75,81 +74,6 @@ def _driver_to_chain_columns_horner(dt, lam, e_lam, q, eq, sign, order):
     difference = qz_pows * (e_lam[:, None] - eq[:, None] * partial_sums)
 
     return sign * jnp.where(use_series[:, None], series, difference)
-
-
-def _erlang_scatter_indices(n_band, order):
-    """Static (rows, cols) enumerating the forward causal transition ``phi``.
-
-    Layout matches ``ErlangResponseDHOQS``: states ``[fast(B), slow(B),
-    chains(B*k)]``; ``transition_matrix`` returns the usual column-state
-    transition ``phi``.
-    """
-    B, k = int(n_band), int(order)
-    n0 = 2 * B
-    rows, cols = [], []
-    for b in range(B):
-        rows.append(b), cols.append(b)
-    for b in range(B):
-        rows.append(B + b), cols.append(B + b)
-    # phi[chain_i, chain_j] (lower-tri Toeplitz incl. diagonal)
-    for b in range(B):
-        for i in range(k):
-            for j in range(i + 1):
-                rows.append(n0 + b * k + i), cols.append(n0 + b * k + j)
-    # phi[chain_i, driver_b] columns
-    for b in range(B):
-        for i in range(k):
-            rows.append(n0 + b * k + i), cols.append(b)
-    for b in range(B):
-        for i in range(k):
-            rows.append(n0 + b * k + i), cols.append(B + b)
-    return np.asarray(rows), np.asarray(cols)
-
-
-def erlang_transitions(kernel, dt):
-    """Vectorized ``vmap(kernel.transition_matrix)`` for the Erlang kernel."""
-    B = int(kernel.tau_fast.shape[0])
-    k = int(kernel.order)
-    D = 2 * B + B * k
-    base = kernel._base()
-    tau_fast, tau_slow = base._ordered_taus()
-    obs_scale = base._obs_scale()
-    q = kernel._response_rates()
-
-    dt = jnp.asarray(dt)
-    e_fast = jnp.exp(-dt[:, None] / tau_fast)  # (N, B)
-    e_slow = jnp.exp(-dt[:, None] / tau_slow)
-    eq = jnp.exp(-q * dt[:, None])
-
-    # chain lower-tri Toeplitz entries eq * (q dt)^d / d!, d = 0..k-1
-    qdt = q * dt[:, None]
-    toep = [eq]
-    fact = 1.0
-    for d_ in range(1, k):
-        fact *= d_
-        toep.append(eq * qdt ** d_ / fact)
-    toep = jnp.stack(toep, axis=-1)  # (N, B, k)
-
-    cols_f = jax.vmap(
-        lambda dtk, ef, eqk: _driver_to_chain_columns_horner(dtk, 1.0 / tau_fast, ef, q, eqk, +1.0, k)
-    )(dt, e_fast, eq)
-    cols_s = jax.vmap(
-        lambda dtk, es, eqk: _driver_to_chain_columns_horner(dtk, 1.0 / tau_slow, es, q, eqk, -1.0, k)
-    )(dt, e_slow, eq)
-    cols_f = obs_scale[None, :, None] * cols_f
-    cols_s = obs_scale[None, :, None] * cols_s
-
-    chain_vals = jnp.stack(
-        [toep[:, b, i - j] for b in range(B) for i in range(k) for j in range(i + 1)],
-        axis=1,
-    )
-    values = jnp.concatenate(
-        [e_fast, e_slow, chain_vals, cols_f.reshape(dt.shape[0], -1), cols_s.reshape(dt.shape[0], -1)],
-        axis=1,
-    )
-    rows, cols = _erlang_scatter_indices(B, k)
-    out = jnp.zeros((dt.shape[0], D, D), dtype=values.dtype)
-    return out.at[:, rows, cols].set(values)
 
 
 def _sym(m):
@@ -279,8 +203,6 @@ def fused_log_probability(kernel, X, diag, resid, *, sort_time=None):
 
     if hasattr(kernel, "batched_transitions"):
         a = kernel.batched_transitions(dt)
-    elif hasattr(kernel, "_driver_to_chain_columns") and hasattr(kernel, "order"):
-        a = erlang_transitions(kernel, dt)
     else:
         Xp = jax.tree_util.tree_map(lambda v: jnp.append(v[0], v[:-1]), X)
         a = jax.vmap(kernel.transition_matrix)(Xp, X)

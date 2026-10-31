@@ -10,7 +10,6 @@ import traceback
 from functools import lru_cache
 
 import numpy as np
-from scipy.linalg import expm as scipy_expm
 from scipy.optimize import curve_fit, least_squares
 from scipy.special import gammaln
 from scipy.stats import kurtosis, normaltest, skew
@@ -88,20 +87,11 @@ from qvc.light_curve.multiband_dho_core import (
     make_linear_mean_func,
     relative_flux_to_mag_residual,
 )
-from qvc.light_curve.multiband_model_dho_blr_erlang import (
-    DEFAULT_ERLANG_ORDER,
-    make_multiband_dho_blr_flux_linearized_erlang_model,
-)
 from qvc.light_curve.multiband_model_shared_latent_blr import (
+    DEFAULT_BLR_ORDER,
     DEFAULT_DISK_ORDER,
     continuum_effective_timescale,
     make_multiband_shared_latent_blr_model,
-)
-from qvc.light_curve.dho_drw_parameterization import (
-    DEFAULT_PERTURBATION_TO_DRW_RATIO,
-    carma21_response_parameters,
-    log_perturbation_ratio_prior,
-    log_quality_factor_prior,
 )
 from qvc.light_curve.fraction_marginalization import (
     empirical_logmeanexp,
@@ -112,9 +102,6 @@ from qvc.light_curve.fraction_marginalization import (
     select_fraction_draws_for_bands,
 )
 from qvc.provenance import build_run_record
-from qvc.light_curve.multiband_model_dho_blr_erlang_drw import (
-    make_multiband_dho_blr_flux_linearized_erlang_drw_model,
-)
 from qvc.light_curve.psf_constant_flux_correction import (
     apply_constant_flux_correction_to_objects,
     attach_spectra_psf_fractions_to_objects,
@@ -126,10 +113,7 @@ from qvc.light_curve.variability_metrics import compute_variability_metrics_for_
 zero_mean = False
 has_jitter = True
 SHARED_LATENT_BLR_VARIANT = "shared_latent_blr"
-FLUX_LINEARIZED_MODEL_VARIANTS = (
-    "mag_flux_linearized_erlang",
-    SHARED_LATENT_BLR_VARIANT,
-)
+FLUX_LINEARIZED_MODEL_VARIANTS = (SHARED_LATENT_BLR_VARIANT,)
 PSF_FRACTION_MODES = ("empirical", "logit-normal", "median")
 DEFAULT_PSF_FRACTION_MODE = "median"
 BALMER_EDGE_REST_WAVELENGTH = 3646.0
@@ -2613,40 +2597,6 @@ def dho_structure_function(tau, amp, tau_fast, tau_slow):
     return np.sqrt(np.clip(sf2, 0.0, None))
 
 
-def dho_drw_q_structure_function(
-    tau,
-    amp,
-    tau_drw,
-    quality_factor,
-    tau_perturb=0.0,
-):
-    """SF of the unit-RMS CARMA(2,1) in DRW-style coordinates."""
-
-    tau = np.asarray(tau, dtype=float)
-    amp = np.asarray(amp, dtype=float)
-    tau_drw = float(np.asarray(tau_drw))
-    quality_factor = float(np.asarray(quality_factor))
-    tau_perturb = max(float(np.asarray(tau_perturb)), 0.0)
-    omega0, damping, ma_ratio = carma21_response_parameters(
-        jnp.asarray([tau_drw]),
-        jnp.asarray([quality_factor]),
-        jnp.asarray([max(tau_perturb, 1e-12)]),
-    )
-    omega0 = float(np.asarray(omega0)[0])
-    damping = float(np.asarray(damping)[0])
-    ma_ratio = float(np.asarray(ma_ratio)[0])
-    design = np.array([[0.0, 1.0], [-omega0**2, -damping]])
-    stationary = np.diag([1.0, omega0**2])
-    obs = np.array([1.0, tau_perturb]) / np.sqrt(1.0 + ma_ratio**2)
-    cov_factor = np.array(
-        [obs @ scipy_expm(design * lag) @ stationary @ obs for lag in tau],
-        dtype=float,
-    )
-
-    sf2 = 2.0 * np.square(amp) * (1.0 - cov_factor)
-    return np.sqrt(np.clip(sf2, 0.0, None))
-
-
 def _build_structure_function_lag_grid(t_band, tau_sf):
     """Choose a rest-frame lag grid that reflects the observed g-band coverage."""
 
@@ -2689,57 +2639,6 @@ def compute_model_structure_function_equivalent(samples, ref_band, tau_grid, *, 
         }
 
     amp_key = f"amp_cont_{ref_band}"
-    tau_drw_key = f"tau_drw_{ref_band}"
-    tau_perturb_key = f"tau_perturb_{ref_band}"
-    if (
-        amp_key in samples
-        and tau_drw_key in samples
-        and "quality_factor" in samples
-    ):
-        amp = np.asarray(samples[amp_key], dtype=float)
-        tau_drw = np.asarray(samples[tau_drw_key], dtype=float)
-        quality_factor = np.asarray(samples["quality_factor"], dtype=float)
-        mask = (
-            np.isfinite(amp)
-            & np.isfinite(tau_drw)
-            & np.isfinite(quality_factor)
-            & (amp > 0.0)
-            & (tau_drw > 0.0)
-            & (quality_factor > 0.0)
-        )
-        if np.count_nonzero(mask) == 0:
-            return nan_out
-        amp_med = float(np.nanmedian(amp[mask]))
-        tau_drw_med = float(np.nanmedian(tau_drw[mask])) / max(1.0 + float(z), 1e-12)
-        q_med = float(np.nanmedian(quality_factor[mask]))
-        tau_perturb_med = (
-            float(np.nanmedian(np.asarray(samples[tau_perturb_key], dtype=float)[mask]))
-            / max(1.0 + float(z), 1e-12)
-            if tau_perturb_key in samples
-            else 0.0
-        )
-        sf_model_fit_grid = dho_drw_q_structure_function(
-            tau_grid,
-            amp_med,
-            tau_drw_med,
-            q_med,
-            tau_perturb_med,
-        )
-        fit = fit_structure_function(tau_grid, sf_model_fit_grid)
-        out = {
-            "log_sigma_sf_model_ref_band": fit["log_sigma_sf"],
-            "log_sigma_sf_model_ref_band_err": fit["log_sigma_sf_err"],
-            "log_tau_sf_model_ref_band": fit["log_tau_sf"],
-            "log_tau_sf_model_ref_band_err": fit["log_tau_sf_err"],
-            "sf_model_valid": fit["sf_valid"],
-        }
-        if return_series:
-            out |= {
-                "sf_model_tau_ref_band": np.asarray(tau_grid, dtype=float),
-                "sf_model_curve_ref_band": sf_model_fit_grid,
-            }
-        return out
-
     tau_fast_key = f"tau_fast_{ref_band}"
     tau_slow_key = f"tau_slow_{ref_band}"
     if any(key not in samples for key in (amp_key, tau_fast_key, tau_slow_key)):
@@ -2974,7 +2873,6 @@ ETA_PRIOR_PROFILES = (
     DEFAULT_ETA_PRIOR_PROFILE,
 )
 MODIFIED_ETA_SIGMA_LOC = -0.8
-MODIFIED_ETA_TAU_LOC = 0.5
 MODIFIED_ETA_PRIOR_SCALE = 0.5
 MODIFIED_TIGHT_ETA_PRIOR_SCALE = 0.25
 
@@ -3001,31 +2899,6 @@ def eta_sigma_prior(eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE):
     return dist.TruncatedNormal(-0.5, 0.5, low=-1.5, high=0.25)
 
 
-def eta_tau_prior(eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE):
-    """Wavelength-scaling prior for the DRW-style timescale."""
-
-    _validate_eta_prior_profile(eta_prior_profile)
-    if eta_prior_profile == "default":
-        return dist.TruncatedNormal(
-            MODIFIED_ETA_TAU_LOC, MODIFIED_TIGHT_ETA_PRIOR_SCALE,
-            low=0.0, high=1.5, validate_args=True,
-        )
-    if eta_prior_profile == "modified":
-        return dist.Normal(MODIFIED_ETA_TAU_LOC, MODIFIED_ETA_PRIOR_SCALE)
-    return dist.TruncatedNormal(0.2, 0.5, low=-0.5, high=1.25)
-
-
-def eta_tau_is_sampled(
-    *,
-    eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE,
-    shared_latent=False,
-):
-    """Whether eta_tau is stochastic for the selected model and prior profile."""
-
-    _validate_eta_prior_profile(eta_prior_profile)
-    return not shared_latent
-
-
 def log_sigma_center0_prior(eta_sigma, lambda_center_rf):
     sigma_shift = sigma_shift_to_uv(eta_sigma, lambda_center_rf)
     return dist.Normal(-0.6 * jnp.log(10.0) - sigma_shift, 1.0 * jnp.log(10.0))
@@ -3049,16 +2922,6 @@ def log_tau_slow_center0_prior(eta_tau, z, lambda_center_rf):
         low=log_tau_uv_low - shift,
         high=log_tau_uv_high - shift,
     )
-
-
-def log_tau_drw_center0_prior(eta_tau, z, lambda_center_rf):
-    """DRW-style integral-time prior matched to the legacy slow-time prior.
-
-    In the legacy prior's strongly overdamped region,
-    tau_drw = tau_slow + tau_fast is effectively tau_slow.
-    """
-
-    return log_tau_slow_center0_prior(eta_tau, z, lambda_center_rf)
 
 
 TAU_FAST_TO_SLOW_PRIOR_RATIO = 150.0
@@ -3480,17 +3343,12 @@ def compute_parameter_kls(
     drop_band_lyman_alpha=False,
     tau_fast_truncated=False,
     n_blr_terms=1,
-    drw_parameterization=False,
     eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE,
 ):
     """Return approximate KL(q||p) for sampled light-curve parameters."""
 
     kls = {}
     eta_sigma = np.asarray(flat_samples["eta_sigma"])
-    shared_latent = model_variant == SHARED_LATENT_BLR_VARIANT
-    eta_tau = (
-        None if shared_latent else np.asarray(flat_samples["eta_tau"])
-    )
     sigma_center0_key = (
         "log_sigma_center0_relflux"
         if model_variant in FLUX_LINEARIZED_MODEL_VARIANTS and "log_sigma_center0_relflux" in flat_samples
@@ -3515,14 +3373,6 @@ def compute_parameter_kls(
         eta_sigma,
         lambda x: _dist_log_prob_array(eta_sigma_prior(eta_prior_profile), x),
     )
-    if eta_tau_is_sampled(
-        eta_prior_profile=eta_prior_profile,
-        shared_latent=shared_latent,
-    ):
-        kls["eta_tau_kl"] = kl_from_samples(
-            eta_tau,
-            lambda x: _dist_log_prob_array(eta_tau_prior(eta_prior_profile), x),
-        )
 
     if sigma_center0_key in flat_samples:
         kls["log_sigma_center0_kl"] = conditional_kl_from_samples(
@@ -3537,52 +3387,17 @@ def compute_parameter_kls(
             eta_sigma,
         )
 
-    if drw_parameterization and "log_tau_drw_center0" in flat_samples:
-        kls["log_tau_drw_center0_kl"] = conditional_kl_from_samples(
-            flat_samples["log_tau_drw_center0"],
-            lambda x, eta: _dist_log_prob_array(
-                log_tau_slow_center0_prior(
-                    eta,
-                    z,
-                    lambda_center_rf,
-                ),
+    if "log_tau_slow_center0" in flat_samples:
+        # One wavelength-independent driver: the slow-time prior has no eta_tau shift.
+        kls["log_tau_slow_center0_kl"] = kl_from_samples(
+            flat_samples["log_tau_slow_center0"],
+            lambda x: _dist_log_prob_array(
+                log_tau_slow_center0_prior(0.0, z, lambda_center_rf),
                 x,
             ),
-            eta_tau,
         )
-        kls["log_quality_factor_kl"] = kl_from_samples(
-            flat_samples["log_quality_factor"],
-            lambda x: _dist_log_prob_array(log_quality_factor_prior(), x),
-        )
-        if "log_tau_perturb_ratio" in flat_samples:
-            kls["log_tau_perturb_ratio_kl"] = kl_from_samples(
-                flat_samples["log_tau_perturb_ratio"],
-                lambda x: _dist_log_prob_array(log_perturbation_ratio_prior(), x),
-            )
-    elif "log_tau_slow_center0" in flat_samples:
-        if shared_latent:
-            kls["log_tau_slow_center0_kl"] = kl_from_samples(
-                flat_samples["log_tau_slow_center0"],
-                lambda x: _dist_log_prob_array(
-                    log_tau_slow_center0_prior(0.0, z, lambda_center_rf),
-                    x,
-                ),
-            )
-        else:
-            kls["log_tau_slow_center0_kl"] = conditional_kl_from_samples(
-                flat_samples["log_tau_slow_center0"],
-                lambda x, eta: _dist_log_prob_array(
-                    log_tau_slow_center0_prior(
-                        eta,
-                        z,
-                        lambda_center_rf,
-                    ),
-                    x,
-                ),
-                eta_tau,
-            )
 
-    if not drw_parameterization and "log_tau_fast_center0" in flat_samples:
+    if "log_tau_fast_center0" in flat_samples:
         kls["log_tau_fast_center0_kl"] = conditional_kl_from_samples(
             flat_samples["log_tau_fast_center0"],
             lambda x, log_tau_slow: _dist_log_prob_array(
@@ -3601,7 +3416,7 @@ def compute_parameter_kls(
             lambda x: _dist_log_prob_array(linear_trend_prior_fn, x),
         )
 
-    if model_variant != "mag_flux_linearized_erlang" and "lag0" in flat_samples:
+    if "lag0" in flat_samples:
         kls["lag0_kl"] = kl_from_samples(
             flat_samples["lag0"],
             lambda x: _dist_log_prob_array(lag0_prior(z=z), x),
@@ -4231,178 +4046,29 @@ def add_model_prediction_params(
     samples,
     lam_rf,
     *,
-    model_variant=None,
+    model_variant=SHARED_LATENT_BLR_VARIANT,
     lam_lya_rf=None,
     disk_order=DEFAULT_DISK_ORDER,
 ):
     """Add explicit model parameters needed for prediction/plotting."""
 
+    if model_variant != SHARED_LATENT_BLR_VARIANT:
+        raise ValueError(f"Unsupported model_variant {model_variant!r}; only {SHARED_LATENT_BLR_VARIANT!r} is available.")
     out = dict(samples)
-    if model_variant == SHARED_LATENT_BLR_VARIANT:
-        # Also sanitize resumed legacy draws, where eta_tau may have been
-        # stored as a deterministic zero or sampled under the modified prior.
-        out.pop("eta_tau", None)
-    use_drw_q = "log_tau_drw_center0" in out
-    if use_drw_q:
-        # The shared wavelength-scaling helper is expressed in the legacy
-        # two-timescale coordinates. For the all-regime DHO these are only
-        # internal compatibility coordinates: two equal halves whose sum is
-        # the integrated DRW-style timescale consumed by the actual kernel.
-        log_half_tau = np.asarray(out["log_tau_drw_center0"]) - np.log(2.0)
-        out.setdefault("log_tau_slow_center0", log_half_tau)
-        out.setdefault("log_tau_fast_center0", log_half_tau)
-        if "quality_factor" not in out and "log_quality_factor" in out:
-            out["quality_factor"] = np.exp(np.asarray(out["log_quality_factor"]))
-    use_relflux = True
-    if use_relflux and model_variant != SHARED_LATENT_BLR_VARIANT and all(
-        key in out
-        for key in (
-            "log_kernel_param",
-            "amp_cont_relflux",
-            "amp_bc_relflux",
-            "amp_blr_relflux",
-            "amp_blr2_relflux",
-            "amp_cont",
-            "amp_bc",
-            "amp_blr",
-            "amp_blr2",
-            "lag_disk",
-            "lag_bc",
-            "lag_blr",
-            "lag_blr2",
-            "tau_fast_band",
-            "tau_slow_band",
-            "log_sigma_uv_relflux",
-            "log_sigma_uv",
-            "log_tau_uv",
-            "log_tau_fast_uv",
-            "log_igm_transmission_band",
-            "igm_transmission_band",
-            "lambda_center_rf",
-        )
-    ):
-        return scale_prediction_samples_by_fraction(out)
-    if use_relflux:
-        explicit = build_explicit_model_params_relflux(
-            out,
-            lam_rf,
-            lam_lya_rf=lam_lya_rf,
-            shared_latent=(model_variant == SHARED_LATENT_BLR_VARIANT),
-        )
-        out["log_kernel_param"] = np.asarray(explicit["log_kernel_param"])
-        out["amp_cont_relflux"] = np.asarray(explicit["amp_cont_relflux"])
-        out["amp_bc_relflux"] = np.asarray(explicit["amp_bc_relflux"])
-        out["amp_blr_relflux"] = np.asarray(explicit["amp_blr_relflux"])
-        out["amp_blr2_relflux"] = np.asarray(explicit["amp_blr2_relflux"])
-        out["amp_cont"] = np.asarray(explicit["amp_cont"])
-        out["amp_bc"] = np.asarray(explicit["amp_bc"])
-        out["amp_blr"] = np.asarray(explicit["amp_blr"])
-        out["amp_blr2"] = np.asarray(explicit["amp_blr2"])
-        out["lag_disk"] = np.asarray(explicit["lag_disk"])
-        out["lag_bc"] = np.asarray(explicit["lag_bc"])
-        out["lag_blr"] = np.asarray(explicit["lag_blr"])
-        out["lag_blr2"] = np.asarray(explicit["lag_blr2"])
-        if use_drw_q:
-            out["tau_drw_band"] = np.asarray(
-                explicit["tau_fast_band"] + explicit["tau_slow_band"]
-            )
-            if "tau_perturb_band" not in out:
-                if "tau_perturb" in out:
-                    out["tau_perturb_band"] = np.asarray(out["tau_perturb"])
-                else:
-                    log_ratio = out.get(
-                        "log_tau_perturb_ratio",
-                        np.log(DEFAULT_PERTURBATION_TO_DRW_RATIO),
-                    )
-                    out["tau_perturb_band"] = (
-                        np.exp(np.asarray(log_ratio))[..., None]
-                        * out["tau_drw_band"]
-                    )
-        else:
-            out["tau_fast_band"] = np.asarray(explicit["tau_fast_band"])
-            out["tau_slow_band"] = np.asarray(explicit["tau_slow_band"])
-            if model_variant == SHARED_LATENT_BLR_VARIANT:
-                out["tau_fast_driver"] = np.asarray(explicit["tau_fast_driver"])
-                out["tau_slow_driver"] = np.asarray(explicit["tau_slow_driver"])
-        out["log_sigma_center0_relflux"] = np.asarray(explicit["log_sigma_center0_relflux"])
-        out.setdefault("log_sigma_center0", np.asarray(explicit["log_sigma_center0_relflux"]))
-        out["log_sigma_center0_mag_equiv"] = np.asarray(explicit["log_sigma_center0"])
-        if not use_drw_q:
-            out["log_tau_slow_center0"] = np.asarray(explicit["log_tau_slow_center0"])
-            out["log_tau_fast_center0"] = np.asarray(explicit["log_tau_fast_center0"])
-        out["log_sigma_uv_relflux"] = np.asarray(explicit["log_sigma_uv_relflux"])
-        out["log_sigma_uv"] = np.asarray(explicit["log_sigma_uv"])
-        if model_variant == SHARED_LATENT_BLR_VARIANT:
-            tau_fast_driver = jnp.asarray(explicit["tau_fast_driver"])
-            tau_slow_driver = jnp.asarray(explicit["tau_slow_driver"])
-            lag_disk_2500 = jnp.asarray(out["lag0"]) * (
-                jnp.asarray(2500.0) / jnp.asarray(explicit["lambda_center_rf"])
-            ) ** (4.0 / 3.0)
-            out["log_tau_uv"] = np.asarray(
-                jnp.log(
-                    jax.vmap(
-                        lambda tf, ts, lag: continuum_effective_timescale(
-                            tf,
-                            ts,
-                            lag,
-                            disk_order=disk_order,
-                        )
-                    )(
-                        tau_fast_driver.reshape(-1),
-                        tau_slow_driver.reshape(-1),
-                        lag_disk_2500.reshape(-1),
-                    )
-                ).reshape(tau_fast_driver.shape)
-            )
-        else:
-            out["log_tau_uv"] = np.asarray(explicit["log_tau_uv"]) + (
-                np.log(2.0) if use_drw_q else 0.0
-            )
-        if not use_drw_q:
-            out["log_tau_fast_uv"] = np.asarray(explicit["log_tau_fast_uv"])
-        out["log_igm_transmission_band"] = np.asarray(explicit["log_igm_transmission_band"])
-        out["igm_transmission_band"] = np.asarray(explicit["igm_transmission_band"])
-        if "dlog_amp_bc" in explicit:
-            out["dlog_amp_bc"] = np.asarray(explicit["dlog_amp_bc"])
-        if "log_lag_ratio_bc_to_blr" in explicit:
-            out["log_lag_ratio_bc_to_blr"] = np.asarray(explicit["log_lag_ratio_bc_to_blr"])
-        if "dlog_amp_blr2" in explicit:
-            out["dlog_amp_blr2"] = np.asarray(explicit["dlog_amp_blr2"])
-        if "log_lag_blr2" in explicit:
-            out["log_lag_blr2"] = np.asarray(explicit["log_lag_blr2"])
-        out["lambda_center_rf"] = np.asarray(explicit["lambda_center_rf"])
-        return scale_prediction_samples_by_fraction(out)
-
-    if all(
-        key in out
-        for key in (
-            "log_kernel_param",
-            "amp_cont",
-            "amp_bc",
-            "amp_blr",
-            "amp_blr2",
-            "lag_disk",
-            "lag_bc",
-            "lag_blr",
-            "lag_blr2",
-            "tau_fast_band",
-            "tau_slow_band",
-            "log_sigma_uv",
-            "log_tau_uv",
-            "log_tau_fast_uv",
-            "log_igm_transmission_band",
-            "igm_transmission_band",
-            "lambda_center_rf",
-        )
-    ):
-        return out
-
-    explicit = build_explicit_model_params(
+    # Also sanitize resumed legacy draws, where eta_tau may have been
+    # stored as a deterministic zero or sampled under the modified prior.
+    out.pop("eta_tau", None)
+    explicit = build_explicit_model_params_relflux(
         out,
         lam_rf,
         lam_lya_rf=lam_lya_rf,
+        shared_latent=True,
     )
     out["log_kernel_param"] = np.asarray(explicit["log_kernel_param"])
+    out["amp_cont_relflux"] = np.asarray(explicit["amp_cont_relflux"])
+    out["amp_bc_relflux"] = np.asarray(explicit["amp_bc_relflux"])
+    out["amp_blr_relflux"] = np.asarray(explicit["amp_blr_relflux"])
+    out["amp_blr2_relflux"] = np.asarray(explicit["amp_blr2_relflux"])
     out["amp_cont"] = np.asarray(explicit["amp_cont"])
     out["amp_bc"] = np.asarray(explicit["amp_bc"])
     out["amp_blr"] = np.asarray(explicit["amp_blr"])
@@ -4413,11 +4079,36 @@ def add_model_prediction_params(
     out["lag_blr2"] = np.asarray(explicit["lag_blr2"])
     out["tau_fast_band"] = np.asarray(explicit["tau_fast_band"])
     out["tau_slow_band"] = np.asarray(explicit["tau_slow_band"])
-    out["log_sigma_center0"] = np.asarray(explicit["log_sigma_center0"])
+    out["tau_fast_driver"] = np.asarray(explicit["tau_fast_driver"])
+    out["tau_slow_driver"] = np.asarray(explicit["tau_slow_driver"])
+    out["log_sigma_center0_relflux"] = np.asarray(explicit["log_sigma_center0_relflux"])
+    out.setdefault("log_sigma_center0", np.asarray(explicit["log_sigma_center0_relflux"]))
+    out["log_sigma_center0_mag_equiv"] = np.asarray(explicit["log_sigma_center0"])
     out["log_tau_slow_center0"] = np.asarray(explicit["log_tau_slow_center0"])
     out["log_tau_fast_center0"] = np.asarray(explicit["log_tau_fast_center0"])
+    out["log_sigma_uv_relflux"] = np.asarray(explicit["log_sigma_uv_relflux"])
     out["log_sigma_uv"] = np.asarray(explicit["log_sigma_uv"])
-    out["log_tau_uv"] = np.asarray(explicit["log_tau_uv"])
+    tau_fast_driver = jnp.asarray(explicit["tau_fast_driver"])
+    tau_slow_driver = jnp.asarray(explicit["tau_slow_driver"])
+    lag_disk_2500 = jnp.asarray(out["lag0"]) * (
+        jnp.asarray(2500.0) / jnp.asarray(explicit["lambda_center_rf"])
+    ) ** (4.0 / 3.0)
+    out["log_tau_uv"] = np.asarray(
+        jnp.log(
+            jax.vmap(
+                lambda tf, ts, lag: continuum_effective_timescale(
+                    tf,
+                    ts,
+                    lag,
+                    disk_order=disk_order,
+                )
+            )(
+                tau_fast_driver.reshape(-1),
+                tau_slow_driver.reshape(-1),
+                lag_disk_2500.reshape(-1),
+            )
+        ).reshape(tau_fast_driver.shape)
+    )
     out["log_tau_fast_uv"] = np.asarray(explicit["log_tau_fast_uv"])
     out["log_igm_transmission_band"] = np.asarray(explicit["log_igm_transmission_band"])
     out["igm_transmission_band"] = np.asarray(explicit["igm_transmission_band"])
@@ -4430,8 +4121,7 @@ def add_model_prediction_params(
     if "log_lag_blr2" in explicit:
         out["log_lag_blr2"] = np.asarray(explicit["log_lag_blr2"])
     out["lambda_center_rf"] = np.asarray(explicit["lambda_center_rf"])
-    return out
-
+    return scale_prediction_samples_by_fraction(out)
 
 
 def build_single_object_model_mag_flux_linearized(
@@ -4446,28 +4136,20 @@ def build_single_object_model_mag_flux_linearized(
     drop_band_lyman_alpha=False,
     tau_fast_truncated=False,
     n_blr_terms=1,
-    use_erlang=True,
-    shared_latent=False,
-    erlang_order=DEFAULT_ERLANG_ORDER,
+    blr_order=DEFAULT_BLR_ORDER,
     disk_order=DEFAULT_DISK_ORDER,
     use_fast_solver=False,
-    drw_parameterization=False,
-    enforce_positive_flux_guard=False,
     enable_seeing_dependence=False,
     psf_fraction_mode=None,
     eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE,
 ):
-    """Return the relative-flux quasi-separable model for one object."""
+    """Return the relative-flux shared-latent disk + BLR model for one object."""
 
     _validate_eta_prior_profile(eta_prior_profile)
     if n_blr_terms != 1:
         raise ValueError(
-            "model_variant='mag_flux_linearized' currently supports only n_blr_terms=1."
+            "The shared_latent_blr model currently supports only n_blr_terms=1."
         )
-    if not use_erlang:
-        raise ValueError("The non-Erlang flux-linearized model has been removed.")
-    if drw_parameterization and (not use_erlang or shared_latent):
-        raise ValueError("drw_parameterization currently requires use_erlang=True.")
 
     (t, bidx) = obj_dict["X"]
     y = obj_dict["y"]
@@ -4521,70 +4203,19 @@ def build_single_object_model_mag_flux_linearized(
             "eta_sigma",
             eta_sigma_prior(eta_prior_profile),
         )
-        if shared_latent:
-            eta_tau = jnp.asarray(0.0)
-        else:
-            eta_tau = numpyro.sample(
-                "eta_tau",
-                eta_tau_prior(eta_prior_profile),
-            )
-
-        tau_center_prior_fn = (
-            log_tau_drw_center0_prior
-            if drw_parameterization
-            else log_tau_slow_center0_prior
+        # One wavelength-independent driver: no eta_tau timescale scaling.
+        log_tau_slow_center0 = numpyro.sample(
+            "log_tau_slow_center0",
+            log_tau_slow_center0_prior(0.0, z, lambda_center_rf),
         )
-        tau_center_prior = tau_center_prior_fn(
-            eta_tau,
-            z,
-            lambda_center_rf,
+        log_tau_separation_raw = numpyro.sample(
+            "log_tau_separation_raw",
+            log_tau_fast_separation_raw_prior(),
         )
-        if drw_parameterization:
-            log_tau_drw_center0 = numpyro.sample(
-                "log_tau_drw_center0",
-                tau_center_prior,
-            )
-            log_quality_factor = numpyro.sample(
-                "log_quality_factor",
-                log_quality_factor_prior(),
-            )
-            log_tau_perturb_ratio = numpyro.sample(
-                "log_tau_perturb_ratio",
-                log_perturbation_ratio_prior(),
-            )
-            quality_factor = numpyro.deterministic(
-                "quality_factor",
-                jnp.exp(log_quality_factor),
-            )
-            # Compatibility coordinates for shared wavelength/amplitude
-            # plumbing. The all-regime kernel consumes their sum as tau_drw;
-            # they are not physical poles when Q > 1/2.
-            log_half_tau = log_tau_drw_center0 - jnp.log(2.0)
-            log_tau_slow_center0 = log_half_tau
-            log_tau_fast_center0 = log_half_tau
-        else:
-            log_tau_slow_center0 = numpyro.sample(
-                "log_tau_slow_center0",
-                tau_center_prior,
-            )
-
-        if use_erlang and not drw_parameterization:
-            log_tau_separation_raw = numpyro.sample(
-                "log_tau_separation_raw",
-                log_tau_fast_separation_raw_prior(),
-            )
-            log_tau_fast_center0 = numpyro.deterministic(
-                "log_tau_fast_center0",
-                ordered_log_tau_fast(log_tau_slow_center0, log_tau_separation_raw),
-            )
-        elif not drw_parameterization:
-            log_tau_fast_center0 = numpyro.sample(
-                "log_tau_fast_center0",
-                log_tau_fast_center0_prior(
-                    log_tau_slow_center0,
-                    tau_fast_truncated=tau_fast_truncated,
-                ),
-            )
+        log_tau_fast_center0 = numpyro.deterministic(
+            "log_tau_fast_center0",
+            ordered_log_tau_fast(log_tau_slow_center0, log_tau_separation_raw),
+        )
         log_sigma_center0 = numpyro.sample(
             "log_sigma_center0",
             log_sigma_center0_relflux_prior(
@@ -4601,23 +4232,12 @@ def build_single_object_model_mag_flux_linearized(
             disable_linear_trend=disable_linear_trend,
             trend_prior_dist=linear_trend_prior_relflux(t_ref=t, z=z),
             band_offset_raw_prior_dist=linear_trend_band_offset_raw_prior_relflux(),
-            shared_linear_trend=use_erlang,
+            shared_linear_trend=True,
         )
 
-        if shared_latent:
-            lag0 = numpyro.sample("lag0", lag0_prior(z=z))
-            log_lag0 = numpyro.deterministic("log_lag0", jnp.log(lag0))
-            lag_beta = numpyro.deterministic("lag_beta", jnp.asarray(4.0 / 3.0))
-        elif use_erlang:
-            # This first implementation gives the prompt continuum zero delay
-            # and assigns all inferred response delay to the causal BLR chain.
-            lag0 = numpyro.deterministic("lag0", jnp.asarray(0.0))
-            log_lag0 = numpyro.deterministic("log_lag0", jnp.asarray(0.0))
-            lag_beta = numpyro.deterministic("lag_beta", jnp.asarray(0.0))
-        else:
-            lag0 = numpyro.sample("lag0", lag0_prior(z=z))
-            log_lag0 = numpyro.deterministic("log_lag0", jnp.log(lag0))
-            lag_beta = numpyro.sample("lag_beta", lag_beta_prior())
+        lag0 = numpyro.sample("lag0", lag0_prior(z=z))
+        log_lag0 = numpyro.deterministic("log_lag0", jnp.log(lag0))
+        lag_beta = numpyro.deterministic("lag_beta", jnp.asarray(4.0 / 3.0))
 
         line_ratio_offsets = compute_flux_line_ratio_offsets(
             lam_rf,
@@ -4652,7 +4272,7 @@ def build_single_object_model_mag_flux_linearized(
             line_ratio_offsets=line_ratio_offsets,
             mean_prior_dist=mean_prior_relflux(),
             disable_lag_blr=disable_lag_blr,
-            disable_lag_bc=(True if use_erlang else disable_lag_bc),
+            disable_lag_bc=True,
             n_blr_terms=n_blr_terms,
         )
 
@@ -4680,8 +4300,6 @@ def build_single_object_model_mag_flux_linearized(
             log_igm_transmission_band=log_igm_transmission_band,
             eta_sigma=eta_sigma,
         )
-        if not shared_latent:
-            raw_params["eta_tau"] = eta_tau
         if dlog_amp_bc is not None:
             raw_params["dlog_amp_bc"] = dlog_amp_bc
             raw_params["log_lag_ratio_bc_to_blr"] = log_lag_ratio_bc_to_blr
@@ -4690,66 +4308,19 @@ def build_single_object_model_mag_flux_linearized(
             raw_params,
             lam_rf,
             lam_lya_rf=lam_lya_rf,
-            shared_latent=shared_latent,
+            shared_latent=True,
         )
-        if drw_parameterization:
-            params["tau_drw_band"] = (
-                params["tau_fast_band"] + params["tau_slow_band"]
-            )
-            params["quality_factor"] = quality_factor
-            params["log_tau_uv"] = params["log_tau_uv"] + jnp.log(2.0)
-            tau_perturb_ratio = jnp.exp(log_tau_perturb_ratio)
-            params["tau_perturb_band"] = (
-                tau_perturb_ratio * params["tau_drw_band"]
-            )
-            params["log_tau_perturb_uv"] = (
-                params["log_tau_uv"] + log_tau_perturb_ratio
-            )
 
         numpyro.deterministic("lambda_center_rf", params["lambda_center_rf"])
         numpyro.deterministic("log_sigma_center0_relflux", params["log_sigma_center0_relflux"])
         numpyro.deterministic("log_sigma_uv_relflux", params["log_sigma_uv_relflux"])
         numpyro.deterministic("log_sigma_uv", params["log_sigma_uv"])
         numpyro.deterministic("log_tau_uv", params["log_tau_uv"])
-        if drw_parameterization:
-            numpyro.deterministic(
-                "tau_drw",
-                params["tau_drw_band"],
-            )
-            numpyro.deterministic(
-                "tau_perturb",
-                params["tau_perturb_band"],
-            )
-            numpyro.deterministic(
-                "log_tau_perturb_uv",
-                params["log_tau_perturb_uv"],
-            )
-            numpyro.deterministic(
-                "tau_perturb_uv",
-                jnp.exp(params["log_tau_perturb_uv"]),
-            )
-            omega0, damping, _ = carma21_response_parameters(
-                params["tau_drw_band"],
-                quality_factor,
-                params["tau_perturb_band"],
-            )
-            numpyro.deterministic(
-                "tau_decay",
-                2.0 / damping,
-            )
-        else:
-            numpyro.deterministic("log_tau_fast_uv", params["log_tau_fast_uv"])
-            numpyro.deterministic("tau_fast", params["tau_fast_band"])
-            numpyro.deterministic("tau_slow", params["tau_slow_band"])
-            if shared_latent:
-                numpyro.deterministic(
-                    "tau_fast_driver",
-                    params["tau_fast_driver"],
-                )
-                numpyro.deterministic(
-                    "tau_slow_driver",
-                    params["tau_slow_driver"],
-                )
+        numpyro.deterministic("log_tau_fast_uv", params["log_tau_fast_uv"])
+        numpyro.deterministic("tau_fast", params["tau_fast_band"])
+        numpyro.deterministic("tau_slow", params["tau_slow_band"])
+        numpyro.deterministic("tau_fast_driver", params["tau_fast_driver"])
+        numpyro.deterministic("tau_slow_driver", params["tau_slow_driver"])
         numpyro.deterministic("amp_cont_relflux", params["amp_cont_relflux"])
         numpyro.deterministic("amp_bc_relflux", params["amp_bc_relflux"])
         numpyro.deterministic("amp_blr_relflux", params["amp_blr_relflux"])
@@ -4766,13 +4337,7 @@ def build_single_object_model_mag_flux_linearized(
         numpyro.deterministic("lag_blr2", params["lag_blr2"])
         numpyro.deterministic("F0_cont_band", baseline_flux_by_band)
 
-        if shared_latent:
-            model_factory = make_multiband_shared_latent_blr_model
-        elif drw_parameterization:
-            model_factory = make_multiband_dho_blr_flux_linearized_erlang_drw_model
-        else:
-            model_factory = make_multiband_dho_blr_flux_linearized_erlang_model
-        m = model_factory(
+        m = make_multiband_shared_latent_blr_model(
             X=(t, bidx),
             y=y_relflux,
             yerr=yerr_relflux,
@@ -4786,32 +4351,10 @@ def build_single_object_model_mag_flux_linearized(
                 if enable_seeing_dependence
                 else None
             ),
-            **(
-                {
-                    "disk_order": disk_order,
-                    "blr_order": erlang_order,
-                    "use_fast_solver": use_fast_solver,
-                }
-                if shared_latent
-                else {"enforce_positive_flux_guard": enforce_positive_flux_guard}
-                if drw_parameterization
-                else {
-                    "erlang_order": erlang_order,
-                    "use_fast_solver": use_fast_solver,
-                }
-            ),
+            disk_order=disk_order,
+            blr_order=blr_order,
+            use_fast_solver=use_fast_solver,
         )
-        if drw_parameterization:
-            positive_flux_margin = m.positive_flux_margin(params)
-            negative_flux_probability = m.negative_total_flux_probability(params)
-            numpyro.deterministic(
-                "positive_flux_margin_min",
-                jnp.min(positive_flux_margin),
-            )
-            numpyro.deterministic(
-                "negative_total_flux_probability_max",
-                jnp.max(negative_flux_probability),
-            )
         if psf_fraction_mode == "empirical":
             component_loglikes = jax.vmap(
                 lambda fractions: m.log_prob(
@@ -5097,13 +4640,11 @@ def run_iterated_mag_flux_linearized_inference(
     tau_fast_truncated=False,
     n_blr_terms=1,
     model_variant=SHARED_LATENT_BLR_VARIANT,
-    erlang_order=DEFAULT_ERLANG_ORDER,
+    blr_order=DEFAULT_BLR_ORDER,
     disk_order=DEFAULT_DISK_ORDER,
     use_fast_solver=False,
     refinement_strategy="nuts_each",
     refinement_iters=FLUX_LINEARIZED_REFINEMENT_ITERS,
-    drw_parameterization=False,
-    enforce_positive_flux_guard=False,
     enable_seeing_dependence=False,
     psf_fraction_mode=None,
     eta_prior_profile=DEFAULT_ETA_PRIOR_PROFILE,
@@ -5118,7 +4659,7 @@ def run_iterated_mag_flux_linearized_inference(
 
     if fit_method == "ns":
         raise ValueError(
-            "model_variant='mag_flux_linearized' uses iterative local likelihood refinement "
+            "The flux-linearized light-curve model uses iterative local likelihood refinement "
             "and currently requires --fit_method nuts or svi+nuts."
         )
     if refinement_strategy not in {"nuts_each", "svi_then_nuts"}:
@@ -5151,13 +4692,9 @@ def run_iterated_mag_flux_linearized_inference(
         drop_band_lyman_alpha=drop_band_lyman_alpha,
         tau_fast_truncated=tau_fast_truncated,
         n_blr_terms=n_blr_terms,
-        use_erlang=True,
-        shared_latent=(model_variant == SHARED_LATENT_BLR_VARIANT),
-        erlang_order=erlang_order,
+        blr_order=blr_order,
         disk_order=disk_order,
         use_fast_solver=use_fast_solver,
-        drw_parameterization=drw_parameterization,
-        enforce_positive_flux_guard=enforce_positive_flux_guard,
         enable_seeing_dependence=enable_seeing_dependence,
         psf_fraction_mode=psf_fraction_mode,
         eta_prior_profile=eta_prior_profile,
@@ -5318,14 +4855,7 @@ def run_iterated_mag_flux_linearized_inference(
             )
 
         params_median = prediction_params
-        use_erlang_response = not disable_lag_blr
-        if model_variant == SHARED_LATENT_BLR_VARIANT:
-            display_factory = make_multiband_shared_latent_blr_model
-        elif drw_parameterization:
-            display_factory = make_multiband_dho_blr_flux_linearized_erlang_drw_model
-        else:
-            display_factory = make_multiband_dho_blr_flux_linearized_erlang_model
-        display_model = display_factory(
+        display_model = make_multiband_shared_latent_blr_model(
             obj_dict["X"],
             y_fit,
             yerr_fit,
@@ -5339,16 +4869,8 @@ def run_iterated_mag_flux_linearized_inference(
                 if enable_seeing_dependence
                 else None
             ),
-            **(
-                {
-                    "disk_order": disk_order,
-                    "blr_order": erlang_order,
-                }
-                if model_variant == SHARED_LATENT_BLR_VARIANT
-                else {"enforce_positive_flux_guard": enforce_positive_flux_guard}
-                if drw_parameterization
-                else {"erlang_order": erlang_order}
-            ),
+            disk_order=disk_order,
+            blr_order=blr_order,
         )
         y_target, yerr_target = _flux_linearized_pseudo_data_from_prediction(
             obj_dict,
@@ -5560,47 +5082,21 @@ def main():
     parser.add_argument(
         "--erlang_order",
         type=int,
-        default=DEFAULT_ERLANG_ORDER,
-        help=f"Positive Erlang BLR response order for --model_variant mag_flux_linearized_erlang (default: {DEFAULT_ERLANG_ORDER}).",
+        default=DEFAULT_BLR_ORDER,
+        help=f"Order of each broad BLR-response Erlang chain (default: {DEFAULT_BLR_ORDER}).",
     )
     parser.add_argument(
         "--disk_order",
         type=int,
         default=DEFAULT_DISK_ORDER,
-        help=(
-            "Order of each narrow disk-response Erlang chain for "
-            f"--model_variant {SHARED_LATENT_BLR_VARIANT} "
-            f"(default: {DEFAULT_DISK_ORDER})."
-        ),
+        help=f"Order of each narrow disk-response Erlang chain (default: {DEFAULT_DISK_ORDER}).",
     )
     parser.add_argument(
         "--fast_solver",
         action="store_true",
         default=False,
         help=(
-            "Use the fused single-scan quasisep likelihood with a custom adjoint "
-            "(exact; --model_variant mag_flux_linearized_erlang or shared_latent_blr)."
-        ),
-    )
-    parser.add_argument(
-        "--dho_drw_parameterization",
-        action="store_true",
-        default=False,
-        help=(
-            "Use the CARMA(2,1) continuum with stationary sigma, integrated "
-            "DRW-style tau, perturbation timescale, and quality factor Q "
-            "across both overdamped and underdamped regimes."
-        ),
-    )
-    parser.add_argument(
-        "--enforce_positive_flux_guard",
-        action="store_true",
-        default=False,
-        help=(
-            "Apply the historical four-sigma positive-total-flux penalty to "
-            "the CARMA(2,1) Erlang likelihood. Disabled by default; the "
-            "positivity margin and negative-flux tail probability are still "
-            "reported as posterior diagnostics."
+            "Use the fused single-scan quasisep likelihood with a custom adjoint (exact)."
         ),
     )
     parser.add_argument(
@@ -5609,7 +5105,7 @@ def main():
         default=FLUX_LINEARIZED_REFINEMENT_ITERS,
         help=(
             "Number of Gauss-Newton magnitude-likelihood refinement fits for "
-            f"flux-linearized model variants (default: {FLUX_LINEARIZED_REFINEMENT_ITERS})."
+            f"the flux-linearized model (default: {FLUX_LINEARIZED_REFINEMENT_ITERS})."
         ),
     )
     parser.add_argument(
@@ -5617,11 +5113,11 @@ def main():
         choices=FLUX_LINEARIZED_MODEL_VARIANTS,
         default=SHARED_LATENT_BLR_VARIANT,
         help=(
-            "Causal-Erlang light-curve model (default: shared_latent_blr). "
-            "'shared_latent_blr' uses one "
-            "wavelength-independent DHO driver with wavelength-scaled disk "
-            "convolutions and bandwise unit-RMS delayed responses; its "
-            "log_tau_uv_rf is the continuum-only 2500 A effective timescale."
+            "Light-curve model; 'shared_latent_blr' is the only option, kept for "
+            "command-line compatibility. It uses one wavelength-independent DHO "
+            "driver with wavelength-scaled disk convolutions and bandwise unit-RMS "
+            "delayed responses; its log_tau_uv_rf is the continuum-only 2500 A "
+            "effective timescale."
         ),
     )
     parser.add_argument(
@@ -5630,13 +5126,11 @@ def main():
         choices=ETA_PRIOR_PROFILES,
         default=DEFAULT_ETA_PRIOR_PROFILE,
         help=(
-            "Wavelength-scaling prior profile. 'relaxed' restores the previous "
-            "eta_sigma and model-specific eta_tau behavior; 'modified' uses "
-            "eta_sigma ~ Normal(-0.8, 0.5) and eta_tau ~ Normal(0.5, 0.5) "
-            "for variants with wavelength-dependent drivers. 'default' uses "
-            "truncated eta_sigma Normal(-0.8, 0.25) on [-1.5, 0] and eta_tau "
-            "Normal(0.5, 0.25) on [0, 1.5]. shared_latent_blr "
-            "has one wavelength-independent driver and does not use eta_tau."
+            "Prior profile for the continuum-RMS wavelength slope eta_sigma. "
+            "'relaxed' uses TruncatedNormal(-0.5, 0.5) on [-1.5, 0.25]; "
+            "'modified' uses Normal(-0.8, 0.5); 'default' uses "
+            "TruncatedNormal(-0.8, 0.25) on [-1.5, 0]. The shared driver has "
+            "no timescale scaling (no eta_tau)."
         ),
     )
     parser.add_argument(
@@ -5747,14 +5241,6 @@ def main():
     results = []
     chain_method = "parallel" if args.nchains and args.nchains > 1 else "sequential"
     if (
-        args.flux_linearized_refinement_strategy != "nuts_each"
-        and args.model_variant not in FLUX_LINEARIZED_MODEL_VARIANTS
-    ):
-        raise ValueError(
-            "--flux_linearized_refinement_strategy is only used by "
-            "--model_variant mag_flux_linearized_erlang."
-        )
-    if (
         args.flux_linearized_refinement_strategy == "svi_then_nuts"
         and args.fit_method != "svi+nuts"
     ):
@@ -5770,27 +5256,6 @@ def main():
         raise ValueError("--flux_linearized_refinement_iters must be at least 1.")
     if not 0.0 < args.target_accept < 1.0:
         raise ValueError("--target_accept must be strictly between 0 and 1.")
-    if args.disk_order != DEFAULT_DISK_ORDER and args.model_variant != SHARED_LATENT_BLR_VARIANT:
-        raise ValueError("--disk_order is only used by --model_variant shared_latent_blr.")
-    if args.fast_solver and args.model_variant not in FLUX_LINEARIZED_MODEL_VARIANTS:
-        raise ValueError(
-            "--fast_solver is only used by --model_variant mag_flux_linearized_erlang "
-            "or shared_latent_blr."
-        )
-    if args.dho_drw_parameterization and args.model_variant != "mag_flux_linearized_erlang":
-        raise ValueError(
-            "--dho_drw_parameterization is only used by "
-            "--model_variant mag_flux_linearized_erlang."
-        )
-    if args.dho_drw_parameterization and args.fast_solver:
-        raise ValueError(
-            "--dho_drw_parameterization currently uses the general matrix-"
-            "exponential solver and cannot be combined with --fast_solver."
-        )
-    if args.enforce_positive_flux_guard and not args.dho_drw_parameterization:
-        raise ValueError(
-            "--enforce_positive_flux_guard requires --dho_drw_parameterization."
-        )
     if args.fit_method == "ns":
         if NestedSampler is None:
             raise ImportError(
@@ -5889,8 +5354,7 @@ def main():
                 )
             if args.n_blr_terms != 1:
                 raise ValueError(
-                    "model_variant='mag_flux_linearized_erlang' currently "
-                    "supports only n_blr_terms=1."
+                    "The shared_latent_blr model currently supports only n_blr_terms=1."
                 )
             numpyro_model = None
             logging.info(
@@ -5944,13 +5408,11 @@ def main():
                             tau_fast_truncated=args.tau_fast_truncated,
                             n_blr_terms=args.n_blr_terms,
                             model_variant=args.model_variant,
-                            erlang_order=args.erlang_order,
+                            blr_order=args.erlang_order,
                             disk_order=args.disk_order,
                             use_fast_solver=args.fast_solver,
                             refinement_strategy=args.flux_linearized_refinement_strategy,
                             refinement_iters=args.flux_linearized_refinement_iters,
-                            drw_parameterization=args.dho_drw_parameterization,
-                            enforce_positive_flux_guard=args.enforce_positive_flux_guard,
                             enable_seeing_dependence=args.enable_seeing_dependence,
                             psf_fraction_mode=(
                                 args.psf_fraction_mode
@@ -6116,15 +5578,7 @@ def main():
                         magerr_residual_to_relative_fluxerr(obj["y"], obj["yerr"]),
                     )
                 )
-                if args.model_variant == SHARED_LATENT_BLR_VARIANT:
-                    display_factory = make_multiband_shared_latent_blr_model
-                else:
-                    display_factory = (
-                        make_multiband_dho_blr_flux_linearized_erlang_drw_model
-                        if args.dho_drw_parameterization
-                        else make_multiband_dho_blr_flux_linearized_erlang_model
-                    )
-                m = display_factory(
+                m = make_multiband_shared_latent_blr_model(
                     obj["X"],
                     y_relflux_display,
                     yerr_relflux_display,
@@ -6138,19 +5592,8 @@ def main():
                         if args.enable_seeing_dependence
                         else None
                     ),
-                    **(
-                        {
-                            "disk_order": args.disk_order,
-                            "blr_order": args.erlang_order,
-                        }
-                        if args.model_variant == SHARED_LATENT_BLR_VARIANT
-                        else
-                        {
-                            "enforce_positive_flux_guard": args.enforce_positive_flux_guard,
-                        }
-                        if args.dho_drw_parameterization
-                        else {}
-                    ),
+                    disk_order=args.disk_order,
+                    blr_order=args.erlang_order,
                 )
             plot_samples = obj_flat_samples
 
@@ -6242,7 +5685,6 @@ def main():
                 drop_band_lyman_alpha=args.drop_band_lyman_alpha,
                 tau_fast_truncated=args.tau_fast_truncated,
                 n_blr_terms=args.n_blr_terms,
-                drw_parameterization=args.dho_drw_parameterization,
                 eta_prior_profile=args.eta_prior_profile,
             )
 

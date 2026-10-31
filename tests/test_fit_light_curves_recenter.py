@@ -36,7 +36,6 @@ from qvc.light_curve.fit_light_curves import (
     compute_g_band_residual_drift_diagnostics,
     compute_g_band_raw_drift_diagnostics,
     eta_sigma_prior,
-    eta_tau_prior,
     TAU_FAST_TO_SLOW_PRIOR_RATIO,
     log_tau_fast_center0_prior,
     log_tau_fast_separation_raw_prior,
@@ -57,12 +56,10 @@ from qvc.light_curve.fit_light_curves import (
     binned_loo_residual_pair_correlation,
     compute_loo_short_lag_residual_diagnostics,
 )
-from qvc.light_curve.multiband_model_dho_blr_erlang import (
-    make_multiband_dho_blr_flux_linearized_erlang_model,
-)
 from qvc.light_curve.multiband_model_shared_latent_blr import (
     SharedLatentDiskBLRQS,
     continuum_effective_timescale,
+    make_multiband_shared_latent_blr_model,
 )
 from qvc.light_curve.multiband_fit_plotting import (
     _corner_plot_labels,
@@ -97,20 +94,15 @@ def _make_raw_public(n_band):
 
 def test_modified_eta_prior_profile_has_requested_normal_priors():
     sigma_prior = eta_sigma_prior("modified")
-    tau_prior = eta_tau_prior("modified")
 
     assert fit_lc.ETA_PRIOR_PROFILES == ("relaxed", "modified", "default")
     assert isinstance(sigma_prior, fit_lc.dist.Normal)
     assert float(sigma_prior.loc) == pytest.approx(-0.8)
     assert float(sigma_prior.scale) == pytest.approx(0.5)
-    assert isinstance(tau_prior, fit_lc.dist.Normal)
-    assert float(tau_prior.loc) == pytest.approx(0.5)
-    assert float(tau_prior.scale) == pytest.approx(0.5)
 
 
 def test_relaxed_eta_prior_profile_has_widened_truncated_normal_priors():
     sigma_prior = eta_sigma_prior("relaxed")
-    tau_prior = eta_tau_prior("relaxed")
 
     assert type(sigma_prior).__name__.endswith("TruncatedDistribution")
     assert float(sigma_prior.base_dist.loc) == pytest.approx(-0.5)
@@ -118,15 +110,8 @@ def test_relaxed_eta_prior_profile_has_widened_truncated_normal_priors():
     assert float(sigma_prior.low) == pytest.approx(-1.5)
     assert float(sigma_prior.high) == pytest.approx(0.25)
 
-    assert type(tau_prior).__name__.endswith("TruncatedDistribution")
-    assert float(tau_prior.base_dist.loc) == pytest.approx(0.2)
-    assert float(tau_prior.base_dist.scale) == pytest.approx(0.5)
-    assert float(tau_prior.low) == pytest.approx(-0.5)
-    assert float(tau_prior.high) == pytest.approx(1.25)
 
-
-@pytest.mark.parametrize("shared_latent", (False, True))
-def test_modified_eta_prior_profile_omits_shared_eta_tau(shared_latent):
+def test_modified_eta_prior_profile_omits_shared_eta_tau():
     obj = {
         "object_id": "modified-eta-prior-smoke",
         "z": 1.0,
@@ -145,7 +130,6 @@ def test_modified_eta_prior_profile_omits_shared_eta_tau(shared_latent):
         obj,
         np.array([2000.0, 3000.0]),
         log_jitter_mean=np.full((2, 3), np.log(0.03)),
-        shared_latent=shared_latent,
         eta_prior_profile="modified",
     )
 
@@ -153,14 +137,7 @@ def test_modified_eta_prior_profile_omits_shared_eta_tau(shared_latent):
         fit_lc.seed(model, jax.random.PRNGKey(0))
     ).get_trace()
 
-    if shared_latent:
-        assert "eta_tau" not in sites
-    else:
-        assert sites["eta_tau"]["type"] == "sample"
-        eta_tau_dist = sites["eta_tau"]["fn"]
-        assert isinstance(eta_tau_dist, fit_lc.dist.Normal)
-        assert float(eta_tau_dist.loc) == pytest.approx(0.5)
-        assert float(eta_tau_dist.scale) == pytest.approx(0.5)
+    assert "eta_tau" not in sites
     eta_sigma_dist = sites["eta_sigma"]["fn"]
     assert isinstance(eta_sigma_dist, fit_lc.dist.Normal)
     assert float(eta_sigma_dist.loc) == pytest.approx(-0.8)
@@ -323,7 +300,7 @@ def test_flux_linearized_refinement_strategy_controls_nuts_runs(
     )
     monkeypatch.setattr(
         fit_lc,
-        "make_multiband_dho_blr_flux_linearized_erlang_model",
+        "make_multiband_shared_latent_blr_model",
         lambda *_args, **_kwargs: object(),
     )
 
@@ -630,24 +607,24 @@ def test_binned_loo_residual_pair_correlation_uses_within_band_rest_frame_pairs(
     assert result["loo_resid_pair_count_rf_10_30d"] == 2
 
 
-def test_loo_residual_diagnostic_accepts_numpy_posterior_samples_for_erlang_model():
+def test_loo_residual_diagnostic_accepts_numpy_posterior_samples():
     times = np.array([0.0, 2.0, 8.0, 20.0, 0.5, 4.0, 12.0, 25.0])
     band_idx = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int32)
     order = np.argsort(times + 1e-9 * band_idx)
     times, band_idx = times[order], band_idx[order]
     y = 0.03 * np.sin(times / 15.0)
     yerr = np.full(times.size, 0.02)
-    model = make_multiband_dho_blr_flux_linearized_erlang_model(
+    model = make_multiband_shared_latent_blr_model(
         (jnp.asarray(times), jnp.asarray(band_idx)),
         jnp.asarray(y),
         jnp.asarray(yerr),
         n_band=2,
         survey_idx=jnp.zeros(times.size, dtype=jnp.int32),
-        erlang_order=3,
     )
     median = {
-        "tau_fast_band": np.array([10.0, 10.0]),
-        "tau_slow_band": np.array([300.0, 300.0]),
+        "tau_fast_driver": np.array(10.0),
+        "tau_slow_driver": np.array(300.0),
+        "lag_disk": np.array([2.0, 3.0]),
         "amp_cont_relflux": np.array([0.15, 0.15]),
         "amp_blr_relflux": np.array([0.03, 0.03]),
         "lag_blr": np.array([50.0, 60.0]),
@@ -838,30 +815,6 @@ def test_build_explicit_model_params_relflux_keeps_igm_out_of_continuum_amplitud
     assert np.allclose(np.asarray(explicit["igm_transmission_band"]), np.asarray(transmission))
 
 
-def test_prediction_params_expand_drw_q_without_legacy_fast_uv_coordinate():
-    lam_rf = jnp.array([1500.0, 2000.0, 2500.0])
-    raw = _make_raw_public(len(lam_rf))
-    raw.pop("log_tau_uv")
-    raw.pop("log_tau_fast_uv")
-    raw["log_tau_drw_center0"] = jnp.log(300.0)
-    raw["log_quality_factor"] = jnp.log(2.0)
-    raw["log_tau_perturb_ratio"] = jnp.log(0.02)
-
-    explicit = add_model_prediction_params(
-        raw,
-        lam_rf,
-        model_variant="mag_flux_linearized_erlang",
-    )
-
-    assert np.allclose(np.asarray(explicit["quality_factor"]), 2.0)
-    assert np.asarray(explicit["tau_drw_band"]).shape == (len(lam_rf),)
-    assert np.all(np.isfinite(np.asarray(explicit["tau_drw_band"])))
-    assert np.allclose(
-        np.asarray(explicit["tau_perturb_band"]),
-        0.02 * np.asarray(explicit["tau_drw_band"]),
-    )
-
-
 def test_shared_prediction_uses_2500_disk_response_and_removes_legacy_eta_tau():
     raw = _make_raw_public(2)
     blue_center = add_model_prediction_params(
@@ -883,44 +836,6 @@ def test_shared_prediction_uses_2500_disk_response_and_removes_legacy_eta_tau():
     # The same driver has a longer synthetic 2500 A response when 2500 A is
     # farther to the red of the fitted wavelength center.
     assert float(blue_center["log_tau_uv"]) > float(red_center["log_tau_uv"])
-
-
-def test_carma21_numpyro_model_trace_materializes_likelihood_and_uv_outputs():
-    obj = {
-        "object_id": "carma21-smoke",
-        "z": 1.0,
-        "X": (
-            np.array([0.0, 5.0, 10.0, 15.0]),
-            np.array([0, 1, 0, 1], dtype=np.int32),
-        ),
-        "y": np.array([0.0, 0.02, -0.01, 0.01]),
-        "yerr": np.full(4, 0.03),
-        "survey_idx": np.zeros(4, dtype=np.int32),
-        "mags_means": np.array([20.0, 20.0]),
-        "bands": ["g", "r"],
-        "survey_names": ("sdss", "ps1", "ztf"),
-    }
-    model = build_single_object_model_mag_flux_linearized(
-        obj,
-        np.array([2000.0, 3000.0]),
-        log_jitter_mean=np.full((2, 3), np.log(0.03)),
-        drw_parameterization=True,
-    )
-
-    sites = fit_lc.trace(
-        fit_lc.seed(model, jax.random.PRNGKey(0))
-    ).get_trace()
-
-    for key in (
-        "log_quality_factor",
-        "log_tau_perturb_ratio",
-        "log_tau_uv",
-        "log_tau_perturb_uv",
-        "tau_perturb",
-        "loglike",
-    ):
-        assert key in sites
-        assert np.all(np.isfinite(np.asarray(sites[key]["value"])))
 
 
 @pytest.mark.parametrize("fraction_mode", ("empirical", "logit-normal"))
@@ -952,7 +867,6 @@ def test_shared_latent_model_uses_joint_psf_fraction_draws(fraction_mode):
         obj,
         np.array([2000.0, 3000.0]),
         log_jitter_mean=np.full((2, 3), np.log(0.03)),
-        shared_latent=True,
         psf_fraction_mode=fraction_mode,
     )
 
@@ -983,13 +897,7 @@ def test_psf_fraction_mode_defaults_to_median():
     }
 
 
-@pytest.mark.parametrize(
-    ("shared_latent", "drw_parameterization"),
-    [(False, False), (True, False), (False, True)],
-)
-def test_seeing_dependence_can_be_enabled_for_every_gp_choice(
-    shared_latent, drw_parameterization
-):
+def test_seeing_dependence_can_be_enabled_and_disabled():
     obj = {
         "object_id": "seeing-smoke",
         "z": 1.0,
@@ -1011,8 +919,6 @@ def test_seeing_dependence_can_be_enabled_for_every_gp_choice(
         obj,
         np.array([2500.0]),
         log_jitter_mean=np.full((1, 3), np.log(0.03)),
-        shared_latent=shared_latent,
-        drw_parameterization=drw_parameterization,
         enable_seeing_dependence=True,
     )
     enabled_sites = fit_lc.trace(
@@ -1026,8 +932,6 @@ def test_seeing_dependence_can_be_enabled_for_every_gp_choice(
         obj,
         np.array([2500.0]),
         log_jitter_mean=np.full((1, 3), np.log(0.03)),
-        shared_latent=shared_latent,
-        drw_parameterization=drw_parameterization,
         enable_seeing_dependence=False,
     )
     disabled_sites = fit_lc.trace(
@@ -1387,137 +1291,6 @@ def test_compute_parameter_kls_ignores_nonfinite_conditioning_samples():
     assert np.isfinite(kls["log_tau_fast_center0_kl"])
 
 
-def test_process_samples_keeps_uv_outputs_at_2500_and_stores_band_metadata():
-    z = 1.5
-    bands = ["g", "r", "i"]
-    lam_rf_kept = np.asarray([lambda_pivot[b] / (1.0 + z) for b in bands], dtype=float)
-    lambda_center_rf = float(np.exp(np.mean(np.log(lam_rf_kept))))
-
-    eta_sigma = np.asarray([-0.6, -0.4, -0.5])
-    eta_tau = np.asarray([0.1, 0.3, 0.2])
-    log_sigma_center0 = np.asarray(np.log([0.18, 0.21, 0.24]))
-    log_tau_slow_center0 = np.asarray(np.log([250.0, 310.0, 400.0]))
-    log_tau_fast_center0 = np.asarray(np.log([25.0, 32.0, 40.0]))
-
-    flat_samples = {
-        "log_sigma_center0": log_sigma_center0,
-        "log_tau_slow_center0": log_tau_slow_center0,
-        "log_tau_fast_center0": log_tau_fast_center0,
-        "log_sigma_uv": log_sigma_center0,
-        "log_tau_uv": log_tau_slow_center0,
-        "log_tau_fast_uv": log_tau_fast_center0,
-        "eta_sigma": eta_sigma,
-        "eta_tau": eta_tau,
-        "log_lag_blr_g": np.asarray(np.log([30.0, 40.0, 50.0])),
-        "log_lag_blr_r": np.asarray(np.log([35.0, 45.0, 55.0])),
-        "log_lag_blr_i": np.asarray(np.log([40.0, 50.0, 60.0])),
-        "log_lag_blr2_g": np.asarray(np.log([80.0, 90.0, 100.0])),
-        "log_lag_blr2_r": np.asarray(np.log([85.0, 95.0, 105.0])),
-        "log_lag_blr2_i": np.asarray(np.log([90.0, 100.0, 110.0])),
-        "lag_bc_g": np.asarray([6.0, 8.0, 10.0]),
-        "lag_bc_r": np.asarray([7.0, 9.0, 11.0]),
-        "lag_bc_i": np.asarray([8.0, 10.0, 12.0]),
-    }
-
-    result = process_samples(
-        flat_samples,
-        {"object_id": "obj", "z": z},
-        bands=bands,
-    )
-
-    expected_log_sigma_uv = np.percentile(log_sigma_center0 / np.log(10), 50)
-    expected_log_tau_uv_rf = np.percentile(
-        log_tau_slow_center0 / np.log(10) - np.log10(1.0 + z),
-        50,
-    )
-    expected_log_tau_fast_uv_rf = np.percentile(
-        log_tau_fast_center0 / np.log(10) - np.log10(1.0 + z),
-        50,
-    )
-
-    assert np.isclose(result["lambda_center_rf"], lambda_center_rf)
-    assert result["n_bands_kept"] == 3
-    assert result["bands_kept"] == "g,r,i"
-    assert np.isclose(result["log_sigma_uv"], expected_log_sigma_uv)
-    assert np.isclose(result["log_tau_uv"], np.percentile(log_tau_slow_center0 / np.log(10), 50))
-    assert np.isclose(result["log_tau_uv_rf"], expected_log_tau_uv_rf)
-    assert np.isclose(result["log_tau_fast_uv_rf"], expected_log_tau_fast_uv_rf)
-    compact_draws = result[LIGHT_CURVE_POSTERIOR_DRAW_PAYLOAD_KEY]
-    assert compact_draws["valid_count"] == 3
-    np.testing.assert_allclose(
-        compact_draws["log_sigma_uv"][:3],
-        log_sigma_center0 / np.log(10.0),
-    )
-    np.testing.assert_allclose(
-        compact_draws["log_tau_uv_rf"][:3],
-        log_tau_slow_center0 / np.log(10.0) - np.log10(1.0 + z),
-    )
-    assert np.all(np.isnan(compact_draws["log_sigma_uv"][3:]))
-    assert np.all(compact_draws["posterior_index"][3:] == -1)
-    assert np.isclose(
-        result["log_lag_blr_r_RF"],
-        np.percentile(np.log10([35.0, 45.0, 55.0]) - np.log10(1.0 + z), 50),
-    )
-
-    assert np.isclose(
-        result["log_lag_blr2_r_RF"],
-        np.percentile(np.log10([85.0, 95.0, 105.0]) - np.log10(1.0 + z), 50),
-    )
-    assert np.isclose(
-        result["log_lag_bc_r_RF"],
-        np.percentile(np.log10([7.0, 9.0, 11.0]) - np.log10(1.0 + z), 50),
-    )
-    assert result["bc_weight_g"] > result["bc_weight_r"] > result["bc_weight_i"] > 0.9
-    lam_g_rf = lambda_pivot["g"] / (1.0 + z)
-    log_sigma_band_g = (
-        log_sigma_center0 / np.log(10)
-        + log_single_pl(lam_g_rf, np.full_like(eta_sigma, 2500.0), eta_sigma)
-    )
-    log_tau_band_g_rf = (
-        log_tau_slow_center0 / np.log(10)
-        - np.log10(1.0 + z)
-        + log_single_pl(lam_g_rf, np.full_like(eta_tau, 2500.0), eta_tau)
-    )
-    log_tau_fast_band_g_rf = (
-        log_tau_fast_center0 / np.log(10)
-        - np.log10(1.0 + z)
-        + log_single_pl(lam_g_rf, np.full_like(eta_tau, 2500.0), eta_tau)
-    )
-    tau_band_g_rf = np.power(10.0, log_tau_band_g_rf)
-    tau_fast_band_g_rf = np.power(10.0, log_tau_fast_band_g_rf)
-    expected_sigma_rms_g = np.percentile(
-        log_sigma_band_g,
-        50,
-    )
-    assert np.isclose(result["log_sigma_rms_band_g"], expected_sigma_rms_g)
-
-
-def test_process_samples_supports_drw_q_without_fast_pole_outputs():
-    samples = {
-        "log_sigma_uv": np.log(np.asarray([0.18, 0.20, 0.22])),
-        "log_tau_uv": np.log(np.asarray([250.0, 300.0, 350.0])),
-        "eta_sigma": np.asarray([-0.5, -0.45, -0.4]),
-        "eta_tau": np.asarray([0.1, 0.2, 0.3]),
-        "quality_factor": np.asarray([1.5, 2.0, 2.5]),
-        "log_quality_factor": np.log(np.asarray([1.5, 2.0, 2.5])),
-    }
-
-    result = process_samples(
-        samples,
-        {"object_id": "qpo", "z": 1.0},
-        bands=["g", "r"],
-    )
-
-    assert np.isfinite(result["log_tau_uv_rf"])
-    assert np.isfinite(result["quality_factor"])
-    assert "log_tau_fast_uv" not in result
-    assert "log_tau_fast_band_g_RF" not in result
-    assert np.isclose(
-        result["log_sigma_rms_band_g"],
-        result["log_sigma_band_g"],
-    )
-
-
 def test_process_samples_stores_shared_latent_effective_band_timescales():
     bands = ["g", "r"]
     z = 1.0
@@ -1655,30 +1428,6 @@ def test_process_samples_stores_shared_latent_effective_band_timescales():
     )
 
 
-def test_process_samples_keeps_bc_lag_for_band_near_balmer_edge():
-    z = lambda_pivot["r"] / 3900.0 - 1.0
-    flat_samples = {
-        "log_sigma_uv": np.asarray(np.log([0.18, 0.21, 0.24])),
-        "log_tau_uv": np.asarray(np.log([250.0, 310.0, 400.0])),
-        "log_tau_fast_uv": np.asarray(np.log([25.0, 32.0, 40.0])),
-        "eta_sigma": np.asarray([-0.6, -0.4, -0.5]),
-        "eta_tau": np.asarray([0.1, 0.3, 0.2]),
-        "lag_bc_r": np.asarray([7.0, 9.0, 11.0]),
-    }
-
-    result = process_samples(
-        flat_samples,
-        {"object_id": "obj", "z": z},
-        bands=["r"],
-    )
-
-    assert result["bc_weight_r"] > 0.2
-    assert np.isclose(
-        result["log_lag_bc_r_RF"],
-        np.percentile(np.log10([7.0, 9.0, 11.0]) - np.log10(1.0 + z), 50),
-    )
-
-
 def test_compute_parameter_kls_returns_expected_keys():
     rng = np.random.default_rng(123)
     bands = ["g", "r"]
@@ -1726,7 +1475,6 @@ def test_compute_parameter_kls_returns_expected_keys():
 
     expected_keys = {
         "eta_sigma_kl",
-        "eta_tau_kl",
         "log_sigma_center0_kl",
         "log_tau_slow_center0_kl",
         "log_tau_fast_center0_kl",
@@ -1761,9 +1509,8 @@ def test_compute_parameter_kls_returns_expected_keys():
     )
 
     assert "eta_sigma_kl" in modified_kls
-    assert "eta_tau_kl" in modified_kls
+    assert "eta_tau_kl" not in modified_kls
     assert np.isfinite(modified_kls["eta_sigma_kl"])
-    assert np.isfinite(modified_kls["eta_tau_kl"])
 
     shared_samples = dict(flat_samples)
     shared_samples.pop("eta_tau")

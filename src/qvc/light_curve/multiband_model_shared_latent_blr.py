@@ -27,6 +27,7 @@ from qvc.light_curve.multiband_dho_core import (
 
 
 DEFAULT_DISK_ORDER = 3
+DEFAULT_BLR_ORDER = 3
 
 
 class SharedLatentDiskBLRQS(qs.Quasisep):
@@ -39,7 +40,7 @@ class SharedLatentDiskBLRQS(qs.Quasisep):
     amp_cont: jnp.ndarray
     amp_blr: jnp.ndarray
     disk_order: int = eqx.field(static=True, default=DEFAULT_DISK_ORDER)
-    blr_order: int = eqx.field(static=True, default=3)
+    blr_order: int = eqx.field(static=True, default=DEFAULT_BLR_ORDER)
 
     def coord_to_sortable(self, X):
         t, b = X
@@ -538,7 +539,7 @@ class SharedLatentDiskBLRRelativeFluxModel(ContiBLRRelativeFlux_SHO_Model):
         self,
         *args,
         disk_order=DEFAULT_DISK_ORDER,
-        blr_order=3,
+        blr_order=DEFAULT_BLR_ORDER,
         use_fast_solver=False,
         **kwargs,
     ):
@@ -615,7 +616,7 @@ def make_multiband_shared_latent_blr_model(
     zero_mean=False,
     has_jitter=True,
     disk_order=DEFAULT_DISK_ORDER,
-    blr_order=3,
+    blr_order=DEFAULT_BLR_ORDER,
     use_fast_solver=False,
 ):
     """Construct the shared-driver disk plus delayed-response model."""
