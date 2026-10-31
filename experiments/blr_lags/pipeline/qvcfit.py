@@ -41,7 +41,8 @@ def build(oid):
     """Return (obj, model, info dict) for one object, exactly as the pipeline would build it."""
     oid = str(oid)
     _STATE["oid"] = oid
-    _STATE["ps1"] = int(_CATALOG[_CATALOG.objectId.astype(str) == oid].iloc[0].ps1objID)
+    ps1 = _CATALOG[_CATALOG.objectId.astype(str) == oid].iloc[0].ps1objID
+    _STATE["ps1"] = int(ps1) if pd.notna(ps1) else -1  # no PS1 match: PS1/ZTF reads come back empty (SDSS only)
     obj = G.populate_sdss_fields(G.concat_light_curves(filter_object_ids=[oid]), progress_bar=False)[0]
     obj["psf_constant_flux_n_bands_corrected"] = 0
     obj["psf_constant_flux_corrected"] = False
