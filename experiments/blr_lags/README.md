@@ -159,6 +159,7 @@ Scripts are in `pipeline/`.
   - the SDSS spectrum over the filter curves.
 - `analyze_line.py <run_dir> <line>`: lag vs. L plot, results CSV and `summary.txt`.
 - `object_job.sh <oid>` runs fit → profile → figure for each selected line of one object. `driver.sh` runs `job_order.txt` 3 objects at a time.
+- `dr16q_lines.py`: DR16Q matching, the line quality mask and in-band line fractions.
 - `line_ew.py`, `strong_lines.py`, `count_strong.py`, `strong10_plot.py`: line band fractions and the strong-line cuts.
 
 **Reference R–L relations** (in `analyze_line.py`):
@@ -178,27 +179,29 @@ Scripts are in `pipeline/`.
 
 ### Task A: build the strong-line sample (χ²_g > 20, line > 20% of band flux)
 
-`pipeline/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band.
+`pipeline/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band, including the quality flags from `pipeline/dr16q_lines.py` (see "Never trust a DR16Q line without `line_quality()`" in the pitfalls). Use only rows with `good == True`.
 
-Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **4,494 have a broad line above 20% of the flux in some band:**
+Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **3,094 have a good-quality broad line above 20% of the flux in some band:**
 
 | Line | u | g | r | i | z | Unique objects |
 |---|---|---|---|---|---|---|
-| Hα | 0 | 0 | 0 | 27 | 164 | 191 |
-| Hβ | 2 | 0 | 0 | 27 | 488 | 515 |
-| Mg II | 20 | 60 | 148 | 185 | 426 | 835 |
-| C IV | 1447 | 1733 | 260 | 12 | 3 | 3408 |
+| Hα | 0 | 0 | 0 | 25 | 140 | 165 |
+| Hβ | 0 | 0 | 0 | 20 | 194 | 214 |
+| Mg II | 1 | 22 | 124 | 137 | 268 | 552 |
+| C IV | 489 | 1637 | 259 | 12 | 1 | 2398 |
+
+Before the quality mask these counts were 4,494 in total (Hβ 515, C IV 3,408). The extra objects were off-spectrum or unconstrained DR16Q line fits.
 
 To do:
 
-1. **Apply the epoch cuts.** Require at least 50 SDSS epochs in the line band (columns `Nsdss_<band>` in the catalog), plus PS1/ZTF coverage where it exists.
-   - z and u bands are SDSS and PS1 only; there is no ZTF z or u. Expect worse lag constraints there. Keep them, but tag the band so we can compare.
+1. **No cadence cuts.** We decided against a minimum number of epochs; any cut there (e.g. 50 SDSS epochs) is arbitrary. Instead, tag each object with its line band and its number of epochs in that band, and report results against them.
+   - z and u bands are SDSS and PS1 only; there is no ZTF z or u. Expect worse lag constraints there. Keep them, but compare against g/r/i.
    - Drop objects with ZTF rms above 0.6 mag; that indicates bad photometry.
 2. **One row per object × line** in `selection.csv` (columns `objectId,z,band,logL,var_snr,line`).
    - Use `LOGL5100` for Hα and Hβ, and `qg_LogL3000` for Mg II and C IV.
    - If a line passes in two bands, keep the band with the larger fraction. Record the fraction.
 3. **Order the jobs.** Generate `job_order.txt` round-robin across lines, so partial results cover every line.
-4. **Prioritize.** C IV dominates the counts and has no reference relation. Run all of Hα, Hβ and Mg II first (about 1,500 objects), then a random subset of about 300 C IV objects.
+4. **Prioritize.** C IV dominates the counts and has no reference relation. Run all of Hα, Hβ and Mg II first (about 930 objects), then a random subset of about 300 C IV objects.
 
 ### Task B: check extendedness (do this before interpreting any lag)
 
@@ -226,7 +229,7 @@ Then:
 
    - The script `cd`s to the repo root itself.
    - Set `QVC_PYTHONPATH` only if you need an overlay, such as an equinox 0.12.2 install in a separate folder.
-3. **Plan the compute.** About 1,800 pairs at about 6 min each over 3 processes is roughly 60 h on a laptop. Use the cluster (`hpc_scripts/` has examples) and run one object per task. Each object is independent.
+3. **Plan the compute.** About 1,200 pairs (930 Hα/Hβ/Mg II plus about 300 C IV) at 1–6 min each over 3 processes is roughly 7–40 h on a laptop. Use the cluster (`hpc_scripts/` has examples) and run one object per task. Each object is independent.
 4. Run `analyze_line.py` per line.
    - Report offset, scatter, the lag–L slope with uncertainty, and the multimodal and edge-pinned fractions.
    - Report all of these against line fraction (20–30%, 30–50%, above 50%) and against band (well-sampled g/r/i vs. u/z).
@@ -274,6 +277,7 @@ One summary figure should show how the selection (variability only → line frac
 
 ## 7. Pitfalls we hit already
 
+- **Never trust a DR16Q line without `line_quality()`.** DR16Q reports a fit for every line, even when the line falls off the end of the spectrum (SDSS-I/II: 3,800–9,200 Å; BOSS: 3,600–10,350 Å) or is not detected. Those fits run away to absurd fluxes and EWs, which gave in-band fractions of 10^8 and put the junk at the top of a fraction-sorted queue (e.g. Hβ at z ≈ 1.2, past the BOSS red end). `pipeline/dr16q_lines.line_quality()` requires: line center ±2 FWHM inside the spectrum, at least 90% of the fitting-window pixels (`*_COMP_STAT[1]`), EW S/N ≥ 3, and log EW below the per-line median + 3 robust σ. `count_strong.py` asserts that no good line has a fraction above 3.
 - **Rebuild instead of monkeypatching.** `eqx.filter_jit` caches traces, so monkeypatching a method after the first call is silently ignored. This produced wrong "continuum" overlays once. Compute derived predictions with the function directly, and check that total = continuum + BLR.
 - **Compare lags between MAP starts, not just U.** Two starts with nearly equal U can sit at very different lags.
 - **Lag label switching** between the disk and BLR components is rare (11/240 bands), but check `first_run_diagnostics/lag_roles.csv` and the fitted disk lags when a band's "BLR lag" is less than about 2 d.
@@ -289,6 +293,7 @@ experiments/blr_lags/
   pipeline/                 committed scripts; copy this folder for each new run
     qvcfit.py fit_object.py lag_profile.py diagnostic_figure.py analyze_line.py
     object_job.sh driver.sh
+    dr16q_lines.py            DR16Q matching, line quality mask, in-band line fractions
     line_ew.py strong_lines.py strong10_plot.py count_strong.py
   first_run_diagnostics/    (local) lag_roles.csv, outcome_correlates.csv from the first 30+30 run
   run4_seeing/              (local) results of the 4-line, 60-object run (fitted with seeing terms)

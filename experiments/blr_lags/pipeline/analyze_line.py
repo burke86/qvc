@@ -69,7 +69,7 @@ for sel, mk, lab in ((~df.multimodal & ~df.edge, "o", "lag posterior median, 68%
     if len(s):
         ax.errorbar(s.logL, np.log10(s.lag), yerr=[np.log10(s.lag / s.lo), np.log10(s.hi / s.lag)], fmt=mk, ms=6 if not flag else 7,
                     color=(MUTED if mk == "x" else BLUE), mec=INK if flag else (MUTED if mk == "x" else "#fcfcfb"), elinewidth=1.2, label=f"{lab} (n={len(s)})")
-ax.set_xlabel(f"log {LUMN} [erg/s]"); ax.set_ylabel(f"log {LINE} BLR lag [rest days]")
+ax.set_xlabel(f"log {LUMN} (erg/s)"); ax.set_ylabel(f"log {LINE} BLR lag (rest days)")
 ax.set_ylim(0.3, 3.1); ax.legend(fontsize=8, frameon=False, loc="lower right")
 ax.set_title(f"{LINE}: S82 light curves, shared_latent_blr, lag-marginal Laplace", loc="left", fontsize=10)
 fig.tight_layout(); fig.savefig(f"{R}/plots/{LINE}/{LINE}_lag_vs_{LUMN}.pdf")

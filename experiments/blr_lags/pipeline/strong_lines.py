@@ -25,7 +25,7 @@ def band_fraction(r):
     return r.ew_rest * (1 + r.z) * T_line / np.trapezoid(f(w), w)
 
 
-props["frac"] = [band_fraction(r) if np.isfinite(r.ew_rest) else np.nan for r in props.itertuples()]
+props["frac"] = [band_fraction(r) if np.isfinite(r.ew_rest) and r.good else np.nan for r in props.itertuples()]  # see dr16q_lines.line_quality
 nmad = lambda x: 1.4826 * np.median(np.abs(x - np.median(x)))
 plt.style.use(style_path())
 fig, axes = plt.subplots(2, 4, figsize=(16, 7.5))
