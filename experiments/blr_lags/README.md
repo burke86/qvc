@@ -199,6 +199,40 @@ The histograms show the line/continuum flux ratio in each line's strongest band 
 
 ![In-band line/continuum flux ratios](figures/line_fraction_hist.png)
 
+#### Photometric-lag sample: a > 0.25, line-band S/N > 3, point sources
+
+The SDSS-RM recovery test (`sdss_rm` repo) works because its line bands have strong variability per point. Two more cuts bring the S82 sample to comparable quality:
+
+1. **Line-band per-point variability S/N > 3.** `pipeline/line_snr.py` fits each object and band with y_i ~ N(μ_survey, σ² + e_i²): one intrinsic amplitude σ for all surveys, a mean per survey (absorbs SDSS/PS1/ZTF offsets), and each point's own error. It reads each survey table once (about 15 s and 1.2 GB for 1,900 objects). The per-point S/N is σ divided by the inverse-variance typical error.
+   - Don't use rms over the *median* error. Adding many noisy ZTF points raises the median error and lowers that S/N, even though there's more data.
+   - The detection significance σ/δσ is also written. It's about 7–8 for both S82 and SDSS-RM, because once the variability is detected it depends mostly on the number of points. It doesn't separate good from poor light curves.
+2. **Point sources only,** with a cut that accounts for noise (`query_morphology.py`, `morphology/morphology.csv`):
+   - For each band, take d = psfMag − cModelMag with error √(σ_psf² + σ_cModel²), then average g, r and i weighted by inverse variance.
+   - An object is extended if that average is above 0.145 *and* at least 3σ above zero, i.e. inconsistent with a point source.
+   - The plain SDSS rule (type 3 or d_r > 0.145, kept as `extended_simple`) ignores the errors. It flagged 281 of 1,572 C IV quasars (18%) at z ≈ 2, where hosts are negligible. Those objects have r ≈ 22 and d = 0.12 ± 0.08, which is noise. The robust cut flags 44 C IV objects, and still 39 of 98 Hα objects at z ≈ 0.3, where hosts are real.
+   - Every object with a line above 0.25 has a measurement. 16 have only secondary SDSS detections, which crossid skips; `query_morphology.py` falls back to the nearest primary-or-secondary detection (`morph_source = sdss_secondary`).
+
+Number of unique objects after each cut (χ²_g > 20, good-quality line, each line in its band with the largest a):
+
+| Line | a > 0.25 | + line-band S/N > 3 | + point source |
+|---|---|---|---|
+| Hα | 98 | 40 | 23 |
+| Hβ | 105 | 8 | 7 |
+| Mg II | 209 | 13 | 12 |
+| C IV | 1,572 | 178 | 173 |
+
+At S/N > 2 (point sources) the counts are Hα 39, Hβ 20, Mg II 30 and C IV 581.
+
+The S/N cut removes most z-band lines: SDSS z photometry of these quasars is about 4× noisier, relative to the variability, than the SDSS-RM bands. In S82, Hβ in the line band has a median per-point S/N of 1.3 (16–84%: 0.8–2.2). The SDSS-RM test bands have 5.7 (3.6–7.9) at a = 1 and 4.9 at a = 0.25. Made by `figures/line_snr_hist.py`:
+
+![Line-band variability S/N, S82 vs SDSS-RM](figures/line_snr_hist.png)
+
+By band (each line in its band with the largest a, stacked by line; `figures/line_snr_bands.py`). Most lines that pass are C IV in u and g, and Hα in i and z. Mg II and Hβ in z rarely reach 3, because SDSS z photometry is noisy.
+
+![Line-band variability S/N by band](figures/line_snr_bands.png)
+
+`pipeline/prm_select.py` applies all of these cuts for Hβ and writes `prm_selection.csv`. The order is `count_strong.py` → `line_snr.py` → `prm_select.py` → `prm_run.sh <run_dir>` → `prm_analyze.py <run_dir>`.
+
 To do:
 
 1. **No cadence cuts.** We decided against a minimum number of epochs; any cut there (e.g. 50 SDSS epochs) is arbitrary. Instead, tag each object with its line band and its number of epochs in that band, and report results against them.
@@ -216,7 +250,7 @@ To do:
 
 - **SDSS DR16 PhotoObj**, matched by position within 2″: `type` and `psfMag − cModelMag` in g, r, i, z.
 - **PS1 DR2 mean photometry**, by 2″ cone search: `MeanPSFMag − MeanKronMag` in g, r, i, z. Do not join on the catalog's `ps1objID`: `Catalog.parquet` stores it as a float, so its last digits are lost and almost no IDs match.
-- **Default cut:** `extended = (sdss_type == 3) | (psfMag_r − cModelMag_r > 0.145)`. Drop extended objects for Hα and Hβ. Do **not** apply the PSF − cModel test in the line band: for faint, high-z objects (Mg II at z ≈ 2, Hβ in z), the i/z values are noise and flag about a third of them spuriously.
+- **Default cut:** error-weighted mean of psfMag − cModelMag over g, r, i above 0.145 and at least 3σ above zero (see Task A). The plain rule `(sdss_type == 3) | (psfMag_r − cModelMag_r > 0.145)` is kept as `extended_simple`. Drop extended objects for Hα and Hβ. Do **not** apply the PSF − cModel test in the line band: for faint, high-z objects (Mg II at z ≈ 2, Hβ in z), the i/z values are noise and flag about a third of them spuriously.
 - Already in the catalog: `qg_fragal` (SED-based host fraction).
 
 What the cut did (first Hα/Mg II run and the Hβ run, single-peaked lags not at the grid edge):
