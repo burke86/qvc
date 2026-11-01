@@ -178,20 +178,24 @@ Scripts are in `pipeline/`.
 
 ## 6. What to do
 
-### Task A: build the strong-line sample (χ²_g > 20, line > 20% of band flux)
+### Task A: build the strong-line sample (χ²_g > 20, line > 50% of band flux)
 
 `pipeline/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band, including the quality flags from `pipeline/dr16q_lines.py` (see "Never trust a DR16Q line without `line_quality()`" in the pitfalls). Use only rows with `good == True`.
 
-Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **3,094 have a good-quality broad line above 20% of the flux in some band:**
+Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **338 have a good-quality broad line above 50% of the flux in some band:**
 
 | Line | u | g | r | i | z | Unique objects |
 |---|---|---|---|---|---|---|
-| Hα | 0 | 0 | 0 | 25 | 140 | 165 |
-| Hβ | 0 | 0 | 0 | 20 | 194 | 214 |
-| Mg II | 1 | 22 | 124 | 137 | 268 | 552 |
-| C IV | 489 | 1637 | 259 | 12 | 1 | 2398 |
+| Hα | 0 | 0 | 0 | 1 | 15 | 16 |
+| Hβ | 0 | 0 | 0 | 0 | 8 | 8 |
+| Mg II | 0 | 0 | 0 | 0 | 0 | 0 |
+| C IV | 121 | 171 | 22 | 0 | 0 | 314 |
 
-Before the quality mask these counts were 4,494 in total (Hβ 515, C IV 3,408). The extra objects were off-spectrum or unconstrained DR16Q line fits.
+Before the quality mask this was 1,222 objects (Hβ 249, C IV 896). The extra objects were off-spectrum or unconstrained DR16Q line fits. At the earlier 20% cut, 3,094 objects pass: Hα 165, Hβ 214, Mg II 552, C IV 2,398.
+
+The histograms show the line/continuum flux ratio in each line's strongest band (good-quality lines only). The red lines mark the SDSS-RM recovery tests (`sdss_rm` repo). Few quasars reach the 0.5 cut except in C IV; Mg II has none. Made by `figures/line_fraction_hist.py` (PDF alongside).
+
+![In-band line/continuum flux ratios](figures/line_fraction_hist.png)
 
 To do:
 
@@ -202,7 +206,7 @@ To do:
    - Use `LOGL5100` for Hα and Hβ, and `qg_LogL3000` for Mg II and C IV.
    - If a line passes in two bands, keep the band with the larger fraction. Record the fraction.
 3. **Order the jobs.** Generate `job_order.txt` round-robin across lines, so partial results cover every line.
-4. **Prioritize.** C IV dominates the counts and has no reference relation. Run all of Hα, Hβ and Mg II first (about 930 objects), then a random subset of about 300 C IV objects.
+4. **Prioritize.** C IV dominates the counts and has no reference relation. Run all of Hα and Hβ first (24 objects; no Mg II passes), then all 314 C IV objects.
 
 ### Task B: check extendedness (do this before interpreting any lag)
 

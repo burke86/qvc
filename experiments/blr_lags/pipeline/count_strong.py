@@ -1,4 +1,4 @@
-"""Count chi2_g > 20 Stripe 82 quasars with a good-quality broad line contributing > 10% (or 20%) of an SDSS band's flux."""
+"""Count chi2_g > 20 Stripe 82 quasars with a good-quality broad line contributing > 50% (or 20%) of an SDSS band's flux."""
 from pathlib import Path
 import numpy as np, pandas as pd
 from dr16q_lines import LINE_COL, MAX_SANE_FRAC, band_fractions, line_quality, load_dr16q, match_dr16q
@@ -26,7 +26,7 @@ print(f"chi2_g > 20 with DR16Q match: {fr.objectId.nunique()}")
 flags = ["covered", "full_window", "measured", "not_outlier"]
 print("objects failing each check (line x object):")
 print(fr.drop_duplicates(["objectId", "line"]).groupby("line")[flags].apply(lambda x: (~x).sum()).to_string())
-for thr in (0.10, 0.20):
+for thr in (0.20, 0.50):
     s = good[good.frac > thr]
     tab = s.pivot_table(index="line", columns="band", values="objectId", aggfunc="count", fill_value=0).reindex(columns=list("ugriz"), fill_value=0)
     tab["any band (unique objects)"] = s.groupby("line").objectId.nunique()
