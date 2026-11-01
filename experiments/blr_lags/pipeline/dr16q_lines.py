@@ -17,6 +17,7 @@ MIN_NPIX_FRAC = 0.9  # fitting-window pixels relative to the full window
 MIN_EW_SNR = 3.0
 EW_OUTLIER_SIGMA = 3.0  # robust sigma in log EW above the per-line median
 MAX_SANE_FRAC = 3.0
+MAX_REDCHI2 = 2.0  # reduced chi2 of the line-complex fit and of the continuum fit (the EW needs both)
 
 
 def load_dr16q():
@@ -39,13 +40,16 @@ def line_quality(d, idx, z, plate, line):
     hi = np.where(boss, WAVE_RANGE["boss"][1], WAVE_RANGE["sdss"][1])
     lam = peak * (1 + z)
     half = COVER_FWHM * fwhm / C_KMS * lam
-    npix = np.asarray(d[STAT_COL[line]][idx], float)[:, 1]
+    stat = np.asarray(d[STAT_COL[line]][idx], float)  # [reduced chi2, npix]
+    npix, line_chi2 = stat[:, 1], stat[:, 0]
+    conti_chi2 = np.asarray(d["CONTI_STAT"][idx], float)[:, 1]  # [npix, reduced chi2]
     with np.errstate(divide="ignore", invalid="ignore"):
         q = pd.DataFrame(dict(
             finite=np.isfinite(peak) & np.isfinite(fwhm) & np.isfinite(ew) & (peak > 0) & (fwhm > 0) & (ew > 0),
             covered=(lam - half > lo) & (lam + half < hi),
             full_window=npix >= MIN_NPIX_FRAC * np.nanmax(npix),
             measured=ew / ew_err >= MIN_EW_SNR,
+            good_fit=(line_chi2 > 0) & (line_chi2 <= MAX_REDCHI2) & (conti_chi2 > 0) & (conti_chi2 <= MAX_REDCHI2),
         ))
         pre = q.all(axis=1).to_numpy()
         lew = np.log10(np.where(pre, ew, np.nan))

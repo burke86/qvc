@@ -23,7 +23,7 @@ good = fr[fr.good]
 worst = good.frac.max()
 assert worst <= MAX_SANE_FRAC, f"good-quality line with in-band fraction {worst:.3g}: check line_quality() before using these"
 print(f"chi2_g > 20 with DR16Q match: {fr.objectId.nunique()}")
-flags = ["covered", "full_window", "measured", "not_outlier"]
+flags = ["covered", "full_window", "measured", "good_fit", "not_outlier"]
 print("objects failing each check (line x object):")
 print(fr.drop_duplicates(["objectId", "line"]).groupby("line")[flags].apply(lambda x: (~x).sum()).to_string())
 for thr in (0.20, 0.50):

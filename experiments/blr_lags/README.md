@@ -182,16 +182,18 @@ Scripts are in `pipeline/`.
 
 `pipeline/count_strong.py` already does the core selection. It writes `chi20_line_fractions.csv` with one row per object × line × band, including the quality flags from `pipeline/dr16q_lines.py` (see "Never trust a DR16Q line without `line_quality()`" in the pitfalls). Use only rows with `good == True`.
 
-Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **338 have a good-quality broad line above 50% of the flux in some band:**
+Current counts. Of 23,502 objects with χ²_g > 20 matched to DR16Q, **335 have a good-quality broad line above 50% of the flux in some band:**
 
 | Line | u | g | r | i | z | Unique objects |
 |---|---|---|---|---|---|---|
-| Hα | 0 | 0 | 0 | 1 | 15 | 16 |
+| Hα | 0 | 0 | 0 | 1 | 12 | 13 |
 | Hβ | 0 | 0 | 0 | 0 | 8 | 8 |
 | Mg II | 0 | 0 | 0 | 0 | 0 | 0 |
-| C IV | 121 | 171 | 22 | 0 | 0 | 314 |
+| C IV | 120 | 173 | 21 | 0 | 0 | 314 |
 
-Before the quality mask this was 1,222 objects (Hβ 249, C IV 896). The extra objects were off-spectrum or unconstrained DR16Q line fits. At the earlier 20% cut, 3,094 objects pass: Hα 165, Hβ 214, Mg II 552, C IV 2,398.
+Before the quality mask this was 1,222 objects (Hβ 249, C IV 896). The extra objects were off-spectrum or unconstrained DR16Q line fits. At the earlier 20% cut, 3,024 objects pass: Hα 148, Hβ 201, Mg II 539, C IV 2,366.
+
+"Good quality" includes the spectral fit itself: the reduced χ² of both the line-complex fit and the continuum fit must be at most 2 (`MAX_REDCHI2` in `pipeline/dr16q_lines.py`). The EW, and so the in-band fraction, depends on both fits. This cut removes 3–8% of lines that pass every other check: Hα 63, Hβ 163, Mg II 520, C IV 531. These fractions are also the priors on the in-band line/continuum ratio for the lag fits.
 
 The histograms show the line/continuum flux ratio in each line's strongest band (good-quality lines only). The red lines mark the SDSS-RM recovery tests (`sdss_rm` repo). Few quasars reach the 0.5 cut except in C IV; Mg II has none. Made by `figures/line_fraction_hist.py` (PDF alongside).
 
@@ -287,7 +289,7 @@ One summary figure should show how the selection (variability only → line frac
 
 ## 7. Pitfalls we hit already
 
-- **Never trust a DR16Q line without `line_quality()`.** DR16Q reports a fit for every line, even when the line falls off the end of the spectrum (SDSS-I/II: 3,800–9,200 Å; BOSS: 3,600–10,350 Å) or is not detected. Those fits run away to absurd fluxes and EWs, which gave in-band fractions of 10^8 and put the junk at the top of a fraction-sorted queue (e.g. Hβ at z ≈ 1.2, past the BOSS red end). `pipeline/dr16q_lines.line_quality()` requires: line center ±2 FWHM inside the spectrum, at least 90% of the fitting-window pixels (`*_COMP_STAT[1]`), EW S/N ≥ 3, and log EW below the per-line median + 3 robust σ. `count_strong.py` asserts that no good line has a fraction above 3.
+- **Never trust a DR16Q line without `line_quality()`.** DR16Q reports a fit for every line, even when the line falls off the end of the spectrum (SDSS-I/II: 3,800–9,200 Å; BOSS: 3,600–10,350 Å) or is not detected. Those fits run away to absurd fluxes and EWs, which gave in-band fractions of 10^8 and put the junk at the top of a fraction-sorted queue (e.g. Hβ at z ≈ 1.2, past the BOSS red end). `pipeline/dr16q_lines.line_quality()` requires: line center ±2 FWHM inside the spectrum, at least 90% of the fitting-window pixels (`*_COMP_STAT[1]`), reduced χ² ≤ 2 for the line-complex fit (`*_COMP_STAT[0]`) and the continuum fit (`CONTI_STAT[1]`), EW S/N ≥ 3, and log EW below the per-line median + 3 robust σ. `count_strong.py` asserts that no good line has a fraction above 3.
 - **Rebuild instead of monkeypatching.** `eqx.filter_jit` caches traces, so monkeypatching a method after the first call is silently ignored. This produced wrong "continuum" overlays once. Compute derived predictions with the function directly, and check that total = continuum + BLR.
 - **Compare lags between MAP starts, not just U.** Two starts with nearly equal U can sit at very different lags.
 - **Lag label switching** between the disk and BLR components is rare (11/240 bands), but check `first_run_diagnostics/lag_roles.csv` and the fitted disk lags when a band's "BLR lag" is less than about 2 d.
